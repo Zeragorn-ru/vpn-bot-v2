@@ -1,0 +1,9 @@
+/.env
+/deploy/.env
+/backups
+/target
+/data
+/logs
+/.DS_Store
+web/*/node_modules/
+web/*/dist/

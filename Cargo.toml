@@ -1,0 +1,54 @@
+[workspace]
+members = [
+  "apps/api",
+  "apps/telegram-bot",
+  "apps/billing-worker",
+  "apps/provisioning-worker",
+  "apps/notification-worker",
+  "crates/domain",
+  "crates/storage",
+  "crates/integrations",
+  "crates/api-contracts",
+  "crates/observability",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+anyhow = "1.0"
+aes-gcm = "0.10"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+base64 = "0.22"
+dotenvy = "0.15"
+hex = "0.4"
+hmac = "0.12"
+http = "1.2"
+rand = "0.8"
+redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "macros"] }
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tower-http = { version = "0.6", features = ["catch-panic", "cors", "request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2.5"
+uuid = { version = "1.12", features = ["serde", "v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"

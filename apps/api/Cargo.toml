@@ -1,0 +1,36 @@
+[package]
+name = "vpn-api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aes-gcm.workspace = true
+argon2.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+dotenvy.workspace = true
+hex.workspace = true
+hmac.workspace = true
+rand.workspace = true
+redis.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+vpn-observability = { path = "../../crates/observability" }
+vpn-integrations = { path = "../../crates/integrations" }
+vpn-domain = { path = "../../crates/domain" }
+vpn-storage = { path = "../../crates/storage" }
+uuid.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

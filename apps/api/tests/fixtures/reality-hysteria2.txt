@@ -1,0 +1,2 @@
+vless://00000000-0000-0000-0000-000000000001@edge.example:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=cdn.example&fp=chrome&pbk=public-key&sid=abcd&type=ws&path=%2Fgateway&host=host.example#Reality%20WS
+hysteria2://secret@hy.example:8443?sni=cdn.example&alpn=h3,h2&fp=chrome&obfs=salamander&obfs-password=mask&congestion=bbr#HY2

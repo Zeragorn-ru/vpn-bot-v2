@@ -1,0 +1,103 @@
+name: vpn-bot-v2
+
+x-service: &service
+  env_file: ${ENV_FILE:-.env}
+  restart: unless-stopped
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: vpn_bot
+      POSTGRES_USER: vpn_bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpn_bot -d vpn_bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *service
+    image: ${VPN_API_IMAGE:?set VPN_API_IMAGE in .env}
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-18080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  telegram-bot:
+    <<: *service
+    image: ${VPN_TELEGRAM_BOT_IMAGE:?set VPN_TELEGRAM_BOT_IMAGE in .env}
+    ports:
+      - "127.0.0.1:${TELEGRAM_WEBHOOK_HOST_PORT:-18083}:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  billing-worker:
+    <<: *service
+    image: ${VPN_BILLING_WORKER_IMAGE:?set VPN_BILLING_WORKER_IMAGE in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  provisioning-worker:
+    <<: *service
+    image: ${VPN_PROVISIONING_WORKER_IMAGE:?set VPN_PROVISIONING_WORKER_IMAGE in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  notification-worker:
+    <<: *service
+    image: ${VPN_NOTIFICATION_WORKER_IMAGE:?set VPN_NOTIFICATION_WORKER_IMAGE in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  admin-web:
+    <<: *service
+    image: ${VPN_ADMIN_WEB_IMAGE:?set VPN_ADMIN_WEB_IMAGE in .env}
+    ports:
+      - "127.0.0.1:${ADMIN_WEB_HOST_PORT:-18082}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  mini-app-web:
+    <<: *service
+    image: ${VPN_MINI_APP_WEB_IMAGE:?set VPN_MINI_APP_WEB_IMAGE in .env}
+    ports:
+      - "127.0.0.1:${MINI_APP_WEB_HOST_PORT:-18081}:80"
+    depends_on:
+      api:
+        condition: service_healthy

@@ -1750,14 +1750,14 @@ async fn admin_secrets(
     let items = KNOWN_SECRETS
         .iter()
         .map(|(key, label, description)| {
-            let is_set = db_secrets.get(*key).map(|v| !v.is_empty()).unwrap_or(false)
+            let is_set = db_secrets.get(*key).is_some_and(|v| !v.is_empty())
                 || env::var(key)
                     .map(|v| !v.is_empty() && v.as_str() != "replace-me")
                     .unwrap_or(false);
             AdminSecretItem {
-                key: key.to_string(),
-                label: label.to_string(),
-                description: description.to_string(),
+                key: (*key).to_string(),
+                label: (*label).to_string(),
+                description: (*description).to_string(),
                 is_set,
             }
         })

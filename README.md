@@ -4,14 +4,14 @@ Telegram VPN sales platform: Rust services, PostgreSQL, Redis, React Mini App an
 
 ## Install
 
-Requirements: Linux host, Docker Engine with Compose plugin, `curl`, `openssl`, and systemd if automatic updates are enabled.
+Requirements: Linux host, Docker Engine with Compose plugin, `curl`, and `openssl`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Zeragorn-ru/vpn-bot-v2/main/setup.sh -o /tmp/vpn-bot-v2-setup.sh
 sudo bash /tmp/vpn-bot-v2-setup.sh
 ```
 
-The installer downloads only the runtime files it needs through the GitHub Contents API. It asks for one absolute installation directory and whether to enable automatic updates, generates database credentials and the encryption key, starts the stack, and leaves all services bound to loopback only.
+The installer downloads only the runtime files it needs through the GitHub Contents API, generates database credentials and the encryption key, starts the stack, and leaves all services bound to loopback only.
 
 Create the first administrator at `http://127.0.0.1:18082` on the host. Configure host nginx, DNS, and TLS manually. Use `deploy/host-nginx.example.conf` as a reference.
 
@@ -21,6 +21,8 @@ The selected installation directory contains Compose configuration, PostgreSQL a
 
 ## Updates
 
-When automatic updates are enabled, `vpn-bot-v2-auto-update.timer` checks the `main` release stream every 15 minutes. It downloads the listed runtime files through the GitHub Contents API, applies SQL migrations, pulls `latest` images, restarts the stack, and verifies API readiness. It does not clone the repository.
+Production deployments are run by GitHub Actions after all images for `main` are published. The workflow uploads the runtime files, connects to the server through SSH, applies migrations, pulls images tagged with the exact commit SHA, restarts the stack, and verifies API readiness.
+
+Configure the GitHub Actions secrets before enabling production deployment: `DEPLOY_HOST`, `DEPLOY_SSH_KEY`, and `DEPLOY_PATH` (for example, `/opt/vpn-bot`). The SSH key must authorize the `root` user on the deployment host.
 
 For a manual update, run `./update.sh` inside the installation directory.

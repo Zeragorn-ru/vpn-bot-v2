@@ -3,7 +3,7 @@
 ## First Deployment
 
 1. Run `sudo ./setup.sh` from the repository root.
-2. Enter the absolute runtime directory and choose whether to enable automatic updates.
+2. Enter the absolute runtime directory.
 3. The installer generates database credentials and `APPLICATION_ENCRYPTION_KEY`, then starts the stack using `latest` images.
 4. Open `http://127.0.0.1:18082` on the server and create the root administrator login and password.
 5. Configure host nginx and TLS to proxy the required public domains to loopback services. Do not expose PostgreSQL or Redis.
@@ -39,9 +39,10 @@ subscription URLs unreadable.
 
 ## Update
 
-1. For automatic updates, check `systemctl status vpn-bot-v2-auto-update.timer`.
-2. For a manual update, run `./update.sh` from the runtime directory.
-3. The script applies SQL migrations, applies the saved loopback port plan, pulls images, restarts services and verifies API readiness.
+1. GitHub Actions deploys every successful push to `main` after image publishing. It uploads runtime files and runs `VPN_BOT_IMAGE_TAG=<commit-sha> ./update.sh` over SSH.
+2. Configure repository secrets: `DEPLOY_HOST`, `DEPLOY_SSH_KEY`, and `DEPLOY_PATH`. The deployment key must be allowed to log in as `root` on the host.
+3. The deployment script applies SQL migrations, applies the saved loopback port plan, pulls the exact SHA-tagged images, restarts services and verifies API readiness.
+4. For an emergency manual update, run `./update.sh` from the runtime directory. Without `VPN_BOT_IMAGE_TAG`, it pulls the configured image tags, normally `latest`.
 
 ## Rollback
 

@@ -77,3 +77,42 @@ jobs:
           tags: |
             ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:${{ github.sha }}
             ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:latest
+
+  deploy:
+    needs: [images, web-images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: vpn-bot-v2-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload runtime files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: >-
+            deploy/docker-compose.yml,deploy/update.sh,deploy/rollback.sh,
+            deploy/backup-postgres.sh,deploy/restore-rehearsal.sh,
+            deploy/apply-runtime-settings.sh,deploy/host-nginx.example.conf,
+            deploy/.env.example,deploy/db/init/001_baseline.sql,
+            deploy/db/migrations/manifest.txt,deploy/db/migrations/*.sql
+          target: ${{ secrets.DEPLOY_PATH }}/
+          strip_components: 1
+      - name: Apply release on server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            runtime_dir='${{ secrets.DEPLOY_PATH }}'
+            test -f "$runtime_dir/.env"
+            systemctl disable --now vpn-bot-v2-auto-update.timer >/dev/null 2>&1 || true
+            cd "$runtime_dir"
+            chmod +x update.sh rollback.sh backup-postgres.sh restore-rehearsal.sh apply-runtime-settings.sh
+            VPN_BOT_IMAGE_TAG='${{ github.sha }}' ./update.sh

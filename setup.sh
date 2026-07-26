@@ -15,12 +15,6 @@ case "$install_dir" in
   /*) ;;
   *) printf '%s\n' 'Installation directory must be an absolute path.' >&2; exit 64 ;;
 esac
-printf 'Enable automatic updates from latest images? [y/N]: '
-if ! read -r auto_update </dev/tty; then
-  printf '%s\n' 'Interactive input is unavailable. Download setup.sh to a file, then run: sudo sh /path/to/setup.sh' >&2
-  exit 64
-fi
-
 if [ -e "$install_dir" ] && [ "$(ls -A "$install_dir" 2>/dev/null || true)" ]; then
   printf '%s\n' "Installation directory is not empty: $install_dir" >&2
   exit 73
@@ -39,7 +33,7 @@ fetch() {
     "$api_base/$path?ref=$branch" \
     --output "$destination"
 }
-for path in docker-compose.yml update.sh rollback.sh backup-postgres.sh restore-rehearsal.sh apply-runtime-settings.sh auto-update.sh host-nginx.example.conf .env.example vpn-bot-v2-auto-update.service vpn-bot-v2-auto-update.timer; do
+for path in docker-compose.yml update.sh rollback.sh backup-postgres.sh restore-rehearsal.sh apply-runtime-settings.sh host-nginx.example.conf .env.example; do
   fetch "$path" "$work_dir/$path"
 done
 fetch db/init/001_baseline.sql "$work_dir/db/init/001_baseline.sql"
@@ -50,8 +44,7 @@ while IFS= read -r migration || [ -n "$migration" ]; do
 done < "$work_dir/db/migrations/manifest.txt"
 cp "$work_dir/docker-compose.yml" "$work_dir/update.sh" "$work_dir/rollback.sh" \
   "$work_dir/backup-postgres.sh" "$work_dir/restore-rehearsal.sh" "$work_dir/apply-runtime-settings.sh" \
-  "$work_dir/auto-update.sh" "$work_dir/host-nginx.example.conf" "$work_dir/.env.example" \
-  "$work_dir/vpn-bot-v2-auto-update.service" "$work_dir/vpn-bot-v2-auto-update.timer" "$install_dir/"
+  "$work_dir/host-nginx.example.conf" "$work_dir/.env.example" "$install_dir/"
 mkdir -p "$install_dir/db/init" "$install_dir/db/migrations"
 cp "$work_dir/db/init/001_baseline.sql" "$install_dir/db/init/001_baseline.sql"
 cp "$work_dir/db/migrations/manifest.txt" "$install_dir/db/migrations/manifest.txt"
@@ -77,21 +70,12 @@ printf '%s\n' \
   'ADMIN_WEB_HOST_PORT=18082' \
   'TELEGRAM_WEBHOOK_HOST_PORT=18083' > "$install_dir/.env"
 chmod 600 "$install_dir/.env"
-chmod +x "$install_dir/update.sh" "$install_dir/rollback.sh" "$install_dir/backup-postgres.sh" "$install_dir/restore-rehearsal.sh" "$install_dir/auto-update.sh" "$install_dir/apply-runtime-settings.sh"
+chmod +x "$install_dir/update.sh" "$install_dir/rollback.sh" "$install_dir/backup-postgres.sh" "$install_dir/restore-rehearsal.sh" "$install_dir/apply-runtime-settings.sh"
 
 (
   cd "$install_dir"
   docker compose --env-file .env -f docker-compose.yml pull
   docker compose --env-file .env -f docker-compose.yml up -d
 )
-
-case "$auto_update" in
-  y|Y|yes|YES)
-    sed "s|__INSTALL_DIR__|$install_dir|g" "$install_dir/vpn-bot-v2-auto-update.service" > /etc/systemd/system/vpn-bot-v2-auto-update.service
-    cp "$install_dir/vpn-bot-v2-auto-update.timer" /etc/systemd/system/vpn-bot-v2-auto-update.timer
-    systemctl daemon-reload
-    systemctl enable --now vpn-bot-v2-auto-update.timer
-    ;;
-esac
 
 printf '\nInstalled. Create the root administrator at http://127.0.0.1:18082\n'

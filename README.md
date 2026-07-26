@@ -4,7 +4,7 @@ Telegram VPN sales platform: Rust services, PostgreSQL, Redis, React Mini App an
 
 ## Install
 
-Requirements: Linux host, Docker Engine with Compose plugin, `git`, `openssl`, and systemd if automatic updates are enabled.
+Requirements: Linux host, Docker Engine with Compose plugin, `curl`, `openssl`, and systemd if automatic updates are enabled.
 
 ```sh
 git clone https://github.com/Zeragorn-ru/vpn-bot-v2.git
@@ -22,6 +22,6 @@ The selected installation directory contains Compose configuration, PostgreSQL a
 
 ## Updates
 
-When automatic updates are enabled, `vpn-bot-v2-auto-update.timer` checks the `main` release stream every 15 minutes. It refreshes runtime files, applies SQL migrations, pulls `latest` images, restarts the stack, and verifies API readiness.
+When automatic updates are enabled, `vpn-bot-v2-auto-update.timer` checks the `main` release stream every 15 minutes. It downloads the listed runtime files through the GitHub Contents API, applies SQL migrations, pulls `latest` images, restarts the stack, and verifies API readiness. It does not clone the repository.
 
 For a manual update, run `./update.sh` inside the installation directory.

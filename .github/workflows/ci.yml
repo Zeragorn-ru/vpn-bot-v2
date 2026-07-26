@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,8 +48,8 @@ jobs:
           build-args: BINARY=${{ matrix.binary }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vpn-bot-v2-${{ matrix.binary }}:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/vpn-bot-v2-${{ matrix.binary }}:latest
+            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.binary }}:${{ github.sha }}
+            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.binary }}:latest
 
   web-images:
     needs: rust
@@ -74,5 +75,5 @@ jobs:
           context: ${{ matrix.context }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vpn-bot-v2-${{ matrix.name }}:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/vpn-bot-v2-${{ matrix.name }}:latest
+            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:${{ github.sha }}
+            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:latest

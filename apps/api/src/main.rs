@@ -764,6 +764,10 @@ async fn main() -> Result<()> {
             get(admin_promos).post(create_admin_promo),
         )
         .route("/api/v1/admin/promos/{id}", put(update_admin_promo))
+        .route(
+            "/api/v1/admin/bot/restart",
+            post(admin_restart_bot),
+        )
         .route("/api/v1/tariffs", get(tariffs))
         .route("/api/v1/payment-providers", get(payment_providers))
         .route("/api/v1/purchases", post(purchase))
@@ -933,6 +937,7 @@ async fn openapi_document() -> Json<Value> {
             "/api/v1/admin/tariffs/{id}": {"put": {"tags": ["Admin"], "summary": "Update a tariff", "parameters": [{"$ref": "#/components/parameters/UuidPath"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpsertTariffRequest"}}}}, "responses": {"200": {"description": "Tariff updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminTariff"}}}}, "400": {"$ref": "#/components/responses/InvalidRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
             "/api/v1/admin/promos": {"get": {"tags": ["Admin"], "summary": "List promos", "responses": {"200": {"description": "Promos", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/AdminPromo"}}}}}, "403": {"$ref": "#/components/responses/Forbidden"}}}, "post": {"tags": ["Admin"], "summary": "Create a promo", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpsertPromoRequest"}}}}, "responses": {"201": {"description": "Promo created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminPromo"}}}}, "400": {"$ref": "#/components/responses/InvalidRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
             "/api/v1/admin/promos/{id}": {"put": {"tags": ["Admin"], "summary": "Update a promo", "parameters": [{"$ref": "#/components/parameters/UuidPath"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpsertPromoRequest"}}}}, "responses": {"200": {"description": "Promo updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminPromo"}}}}, "400": {"$ref": "#/components/responses/InvalidRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
+            "/api/v1/admin/bot/restart": {"post": {"tags": ["Admin"], "summary": "Request bot process restart", "description": "Writes a restart flag to the database. The bot process polls for this flag and exits cleanly; Docker restarts it automatically.", "responses": {"200": {"description": "Restart signal sent", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BotRestartResponse"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
             "/api/v1/admin/required-channels": {"get": {"tags": ["Admin"], "summary": "List required channels", "responses": {"200": {"description": "Required channels", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/RequiredChannel"}}}}}, "403": {"$ref": "#/components/responses/Forbidden"}}}, "post": {"tags": ["Admin"], "summary": "Create a required channel", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpsertRequiredChannelRequest"}}}}, "responses": {"201": {"description": "Channel created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RequiredChannel"}}}}, "400": {"$ref": "#/components/responses/InvalidRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
             "/api/v1/admin/required-channels/{id}": {"put": {"tags": ["Admin"], "summary": "Update a required channel", "parameters": [{"$ref": "#/components/parameters/UuidPath"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpsertRequiredChannelRequest"}}}}, "responses": {"200": {"description": "Channel updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RequiredChannel"}}}}, "400": {"$ref": "#/components/responses/InvalidRequest"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}}}}
         },
@@ -1003,7 +1008,8 @@ async fn openapi_document() -> Json<Value> {
                 "UserPage": {"allOf": [{"$ref": "#/components/schemas/Page"}, {"type": "object", "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/AdminUser"}}}}]},
                 "SubscriptionPage": {"allOf": [{"$ref": "#/components/schemas/Page"}, {"type": "object", "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/AdminSubscription"}}}}]},
                 "AdminInvoicePage": {"allOf": [{"$ref": "#/components/schemas/Page"}, {"type": "object", "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/AdminInvoice"}}}}]},
-                "AuditPage": {"allOf": [{"$ref": "#/components/schemas/Page"}, {"type": "object", "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/AuditRecord"}}}}]}
+                "AuditPage": {"allOf": [{"$ref": "#/components/schemas/Page"}, {"type": "object", "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/AuditRecord"}}}}]},
+                "BotRestartResponse": {"type": "object", "required": ["ok", "message"], "properties": {"ok": {"type": "boolean"}, "message": {"type": "string"}}}
             }
         }
     }))
@@ -1251,6 +1257,29 @@ async fn update_admin_telegram_transport(
     )
     .await?;
     Ok(Json(settings))
+}
+
+#[derive(Debug, Serialize)]
+struct BotRestartResponse {
+    ok: bool,
+    message: String,
+}
+
+async fn admin_restart_bot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<BotRestartResponse>, ApiError> {
+    let actor_user_id = authenticated_admin_id(&state, &headers).await?;
+    let flag = json!({
+        "requested_at": Utc::now().to_rfc3339(),
+        "requested_by": actor_user_id,
+    });
+    save_admin_setting(&state.database, actor_user_id, "bot_restart", &flag).await?;
+    info!(actor_user_id = %actor_user_id, "bot restart requested via admin API");
+    Ok(Json(BotRestartResponse {
+        ok: true,
+        message: "Bot restart signal sent. The bot process will exit and Docker will restart it automatically.".to_owned(),
+    }))
 }
 
 async fn me(
@@ -5073,7 +5102,7 @@ mod tests {
                 "missing responses for {method} {path}"
             );
         }
-        assert_eq!(document["paths"].as_object().unwrap().len(), 29);
+        assert_eq!(document["paths"].as_object().unwrap().len(), 30);
         assert_eq!(
             document["components"]["schemas"]["AdminAnalytics"]["properties"]["totals"]["required"],
             serde_json::json!([

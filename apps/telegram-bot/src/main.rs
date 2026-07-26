@@ -202,14 +202,31 @@ async fn load_transport_mode(database: &PgPool) -> Result<String> {
     }
 }
 
+async fn should_restart(database: &PgPool) -> Result<bool> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM app_settings WHERE key = 'bot_restart')",
+    )
+    .fetch_one(database)
+    .await?;
+    Ok(exists)
+}
+
 async fn run_polling_loop(state: &BotState) -> Result<()> {
     let mut offset = None;
+    let mut restart_check = tokio::time::interval(Duration::from_secs(10));
+    restart_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             result = poll_updates(state, &mut offset) => {
                 if let Err(error) = result {
                     error!(%error, "Telegram update processing failed");
                     sleep(Duration::from_secs(2)).await;
+                }
+            }
+            _ = restart_check.tick() => {
+                if should_restart(&state.database).await.unwrap_or(false) {
+                    info!("restart flag detected, shutting down for Docker restart");
+                    return Ok(());
                 }
             }
             result = tokio::signal::ctrl_c() => {
@@ -353,17 +370,32 @@ async fn run_webhook_server(state: BotState) -> Result<()> {
     let app = Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route("/telegram/webhook", post(telegram_webhook))
-        .with_state(state);
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .context("Telegram webhook bind failed")?;
     info!(%bind_addr, "Telegram webhook server started");
+    let restart_state = state;
+    let shutdown_signal = async move {
+        let mut restart_check = tokio::time::interval(Duration::from_secs(10));
+        restart_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = restart_check.tick() => {
+                    if should_restart(&restart_state.database).await.unwrap_or(false) {
+                        info!("restart flag detected, shutting down for Docker restart");
+                        return;
+                    }
+                }
+                result = tokio::signal::ctrl_c() => {
+                    result.expect("failed to install Ctrl+C handler");
+                    return;
+                }
+            }
+        }
+    };
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to install Ctrl+C handler");
-        })
+        .with_graceful_shutdown(shutdown_signal)
         .await
         .context("Telegram webhook server failed")
 }

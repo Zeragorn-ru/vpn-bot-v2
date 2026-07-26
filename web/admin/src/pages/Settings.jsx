@@ -11,6 +11,7 @@ export function IntegrationsPage({ notify }) {
     ["publicSettings", "/admin/public-settings"],
   ]);
   const { run } = useMutation();
+  const [restarting, setRestarting] = useState(false);
 
   if (loading && !data.providers) return <Loader title="Проверяем интеграции" />;
   if (error && !data.providers) return <ErrorState detail={error} onRetry={reload} />;
@@ -33,6 +34,18 @@ export function IntegrationsPage({ notify }) {
     }
   };
 
+  const restartBot = async () => {
+    setRestarting(true);
+    try {
+      const result = await run("/admin/bot/restart", { method: "POST" });
+      notify({ message: result?.message || "Сигнал перезапуска отправлен. Бот перезапустится автоматически." });
+    } catch (cause) {
+      notify({ message: cause.message, tone: "error" });
+    } finally {
+      setRestarting(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -46,6 +59,16 @@ export function IntegrationsPage({ notify }) {
           <p className="muted-text">
             Токен задаётся секретом <code>TELEGRAM_BOT_TOKEN</code>. Режим меняется в разделе «Среда».
           </p>
+          <div style={{ marginTop: "var(--space-3)" }}>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={restarting}
+              onClick={restartBot}
+            >
+              {restarting ? "Перезапускаем..." : "Перезапустить бота"}
+            </button>
+          </div>
         </Card>
         <Card title="Remnawave" action={<Badge tone={publicSettings.subscription_public_url ? "ok" : "warn"}>{publicSettings.subscription_public_url ? "настроен" : "не задан"}</Badge>}>
           <p className="stat-big">VPN Backend</p>
@@ -249,6 +272,7 @@ export function RuntimePage({ notify }) {
     ["transport", "/admin/telegram-transport"],
   ]);
   const { run, pending } = useMutation();
+  const [restarting, setRestarting] = useState(false);
   const [addresses, setAddresses] = useDraft({
     mini_app_url: data.publicSettings?.mini_app_url ?? "",
     admin_url: data.publicSettings?.admin_url ?? "",
@@ -384,6 +408,26 @@ export function RuntimePage({ notify }) {
               </select>
             </Field>
           </SettingsForm>
+          <Card title="Перезапуск бота" description="Перезапуск через API — бот завершит работу, Docker поднимет его автоматически">
+            <button
+              type="button"
+              className="btn primary"
+              disabled={restarting}
+              onClick={async () => {
+                setRestarting(true);
+                try {
+                  const result = await run("/admin/bot/restart", { method: "POST" });
+                  notify({ message: result?.message || "Сигнал перезапуска отправлен." });
+                } catch (cause) {
+                  notify({ message: cause.message, tone: "error" });
+                } finally {
+                  setRestarting(false);
+                }
+              }}
+            >
+              {restarting ? "Перезапускаем..." : "Перезапустить бота"}
+            </button>
+          </Card>
         </div>
       </div>
     </>

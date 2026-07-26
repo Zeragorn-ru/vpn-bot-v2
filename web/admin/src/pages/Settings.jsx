@@ -272,6 +272,20 @@ export function PoliciesPage({ notify }) {
   );
 }
 
+function normalizeDomain(value) {
+  return value.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+function buildUrl(domain, path = "") {
+  if (!domain) return "";
+  return `https://${normalizeDomain(domain)}${path}`;
+}
+
+function extractDomain(url) {
+  if (!url) return "";
+  return normalizeDomain(url);
+}
+
 export function RuntimePage({ notify }) {
   const { data, error, loading, reload } = useQueries([
     ["publicSettings", "/admin/public-settings"],
@@ -280,14 +294,18 @@ export function RuntimePage({ notify }) {
   ]);
   const { run, pending } = useMutation();
   const [restarting, setRestarting] = useState(false);
-  const [addresses, setAddresses] = useDraft({
-    mini_app_url: data.publicSettings?.mini_app_url ?? "",
-    admin_url: data.publicSettings?.admin_url ?? "",
-    subscription_public_url: data.publicSettings?.subscription_public_url ?? "",
-    telegram_webhook_url: data.publicSettings?.telegram_webhook_url ?? "",
-    cors_origins: (data.publicSettings?.cors_origins || []).join(", "),
-    support_url: data.publicSettings?.support_url ?? "",
-  });
+
+  const ps = data.publicSettings || {};
+  const [baseDomain, setBaseDomain] = useDraft(extractDomain(ps.mini_app_url) || extractDomain(ps.admin_url) || "");
+  const [webhookDomain, setWebhookDomain] = useDraft(extractDomain(ps.telegram_webhook_url) || "");
+  const [supportUrl, setSupportUrl] = useDraft(ps.support_url ?? "");
+  const [corsInput, setCorsInput] = useDraft((ps.cors_origins || []).join(", "));
+
+  const mini_app_url = buildUrl(baseDomain);
+  const admin_url = buildUrl(baseDomain ? `admin.${baseDomain}` : "");
+  const subscription_public_url = buildUrl(baseDomain ? `sub.${baseDomain}` : "");
+  const telegram_webhook_url = buildUrl(webhookDomain, "/telegram/webhook");
+
   const [ports, setPorts] = useDraft({
     api_host_port: String(data.runtime?.api_host_port ?? ""),
     mini_app_host_port: String(data.runtime?.mini_app_host_port ?? ""),
@@ -320,49 +338,56 @@ export function RuntimePage({ notify }) {
         <SettingsForm
           id="addresses-form"
           title="Публичные адреса"
-          description="Используются в ссылках и проверке CORS"
+          description="Введите базовый домен — пути и поддомены подставятся автоматически"
           pending={pending}
           onSubmit={(event) => {
             event.preventDefault();
             save(
               "/admin/public-settings",
               {
-                ...addresses,
-                cors_origins: addresses.cors_origins
+                mini_app_url,
+                admin_url,
+                subscription_public_url,
+                telegram_webhook_url,
+                cors_origins: corsInput
                   .split(",")
                   .map((origin) => origin.trim())
                   .filter(Boolean),
-                support_url: addresses.support_url || null,
+                support_url: supportUrl || null,
               },
               "Публичные адреса сохранены.",
             );
           }}
         >
-          <Field label="Mini App URL">
-            <input required value={addresses.mini_app_url} onChange={(event) => setAddresses({ ...addresses, mini_app_url: event.target.value })} />
-          </Field>
-          <Field label="Админка URL">
-            <input required value={addresses.admin_url} onChange={(event) => setAddresses({ ...addresses, admin_url: event.target.value })} />
-          </Field>
-          <Field label="URL подписки">
+          <Field label="Домен" hint="app.vpn-test.zeragorn.xyz" wide>
             <input
               required
-              value={addresses.subscription_public_url}
-              onChange={(event) => setAddresses({ ...addresses, subscription_public_url: event.target.value })}
+              value={baseDomain}
+              onChange={(event) => setBaseDomain(event.target.value)}
+              placeholder="app.vpn-test.zeragorn.xyz"
             />
           </Field>
-          <Field label="Webhook Telegram">
+          <div className="field-preview" style={{ fontSize: 12, opacity: 0.6, lineHeight: 1.6, marginBottom: 8 }}>
+            Mini App: {mini_app_url}<br/>
+            Админка: {admin_url}<br/>
+            Подписки: {subscription_public_url}
+          </div>
+          <Field label="Домен Webhook" hint="tg.vpn-test.zeragorn.xyz" wide>
             <input
               required
-              value={addresses.telegram_webhook_url}
-              onChange={(event) => setAddresses({ ...addresses, telegram_webhook_url: event.target.value })}
+              value={webhookDomain}
+              onChange={(event) => setWebhookDomain(event.target.value)}
+              placeholder="tg.vpn-test.zeragorn.xyz"
             />
           </Field>
+          <div className="field-preview" style={{ fontSize: 12, opacity: 0.6, marginBottom: 8 }}>
+            Webhook: {telegram_webhook_url}
+          </div>
           <Field label="CORS origins" hint="Через запятую" wide>
-            <input value={addresses.cors_origins} onChange={(event) => setAddresses({ ...addresses, cors_origins: event.target.value })} />
+            <input value={corsInput} onChange={(event) => setCorsInput(event.target.value)} />
           </Field>
           <Field label="Поддержка" hint="Необязательно" wide>
-            <input value={addresses.support_url} onChange={(event) => setAddresses({ ...addresses, support_url: event.target.value })} />
+            <input value={supportUrl} onChange={(event) => setSupportUrl(event.target.value)} placeholder="https://t.me/..." />
           </Field>
         </SettingsForm>
         <div className="stack">

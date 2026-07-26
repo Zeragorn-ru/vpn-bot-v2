@@ -155,9 +155,12 @@ async fn main() -> Result<()> {
     };
     let mini_app_url = match env::var("MINI_APP_PUBLIC_URL") {
         Ok(value) if !value.is_empty() => value,
-        _ => load_secret_from_db(&database, "MINI_APP_PUBLIC_URL")
-            .await
-            .context("MINI_APP_PUBLIC_URL is required (set in env or app_secrets)")?,
+        _ => match load_secret_from_db(&database, "MINI_APP_PUBLIC_URL").await {
+            Ok(value) => value,
+            Err(_) => load_public_setting(&database, "mini_app_url")
+                .await
+                .context("MINI_APP_PUBLIC_URL is required (set in env, app_secrets, or admin public-settings)")?,
+        },
     };
     validate_mini_app_url(&mini_app_url)?;
     let client = reqwest::Client::builder()
@@ -240,6 +243,21 @@ async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
         .await?
         .filter(|value| !value.is_empty())
         .context(format!("secret {key} not found in app_secrets"))
+}
+
+async fn load_public_setting(database: &PgPool, field: &str) -> Result<String> {
+    let value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM app_settings WHERE key = 'public_settings'",
+    )
+    .fetch_optional(database)
+    .await?
+    .unwrap_or(serde_json::json!({}));
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .context(format!("field '{field}' not found in public_settings"))
 }
 
 async fn run_polling_loop(state: &BotState) -> Result<()> {

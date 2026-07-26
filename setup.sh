@@ -6,14 +6,14 @@ branch=${VPN_BOT_BRANCH:-main}
 api_base="https://api.github.com/repos/$repository/contents/deploy"
 default_dir=/opt/vpn-bot-v2
 printf 'Installation directory [%s]: ' "$default_dir"
-read -r install_dir
+read -r install_dir </dev/tty
 install_dir=${install_dir:-$default_dir}
 case "$install_dir" in
   /*) ;;
   *) printf '%s\n' 'Installation directory must be an absolute path.' >&2; exit 64 ;;
 esac
 printf 'Enable automatic updates from latest images? [y/N]: '
-read -r auto_update
+read -r auto_update </dev/tty
 
 if [ -e "$install_dir" ] && [ "$(ls -A "$install_dir" 2>/dev/null || true)" ]; then
   printf '%s\n' "Installation directory is not empty: $install_dir" >&2

@@ -7,12 +7,10 @@ Telegram VPN sales platform: Rust services, PostgreSQL, Redis, React Mini App an
 Requirements: Linux host, Docker Engine with Compose plugin, `curl`, `openssl`, and systemd if automatic updates are enabled.
 
 ```sh
-git clone https://github.com/Zeragorn-ru/vpn-bot-v2.git
-cd vpn-bot-v2
-sudo ./setup.sh
+curl -fsSL https://raw.githubusercontent.com/Zeragorn-ru/vpn-bot-v2/main/setup.sh | sudo sh
 ```
 
-The installer asks for one absolute installation directory and whether to enable automatic updates. It then generates database credentials and the encryption key, starts the stack, and leaves all services bound to loopback only.
+The installer downloads only the runtime files it needs through the GitHub Contents API. It asks for one absolute installation directory and whether to enable automatic updates, generates database credentials and the encryption key, starts the stack, and leaves all services bound to loopback only.
 
 Create the first administrator at `http://127.0.0.1:18082` on the host. Configure host nginx, DNS, and TLS manually. Use `deploy/host-nginx.example.conf` as a reference.
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository=${VPN_BOT_REPOSITORY:-Zeragorn-ru/vpn-bot-v2}
+branch=${VPN_BOT_BRANCH:-main}
+api_base="https://api.github.com/repos/$repository/contents/deploy"
 default_dir=/opt/vpn-bot-v2
 printf 'Installation directory [%s]: ' "$default_dir"
 read -r install_dir
@@ -19,7 +21,35 @@ if [ -e "$install_dir" ] && [ "$(ls -A "$install_dir" 2>/dev/null || true)" ]; t
 fi
 
 mkdir -p "$install_dir"
-cp -R "$source_dir/deploy/." "$install_dir/"
+work_dir=$(mktemp -d)
+cleanup() { rm -rf "$work_dir"; }
+trap cleanup EXIT INT TERM
+fetch() {
+  path=$1
+  destination=$2
+  mkdir -p "$(dirname -- "$destination")"
+  curl --fail --silent --show-error --location \
+    -H 'Accept: application/vnd.github.raw+json' \
+    "$api_base/$path?ref=$branch" \
+    --output "$destination"
+}
+for path in docker-compose.yml update.sh rollback.sh backup-postgres.sh restore-rehearsal.sh apply-runtime-settings.sh auto-update.sh host-nginx.example.conf .env.example vpn-bot-v2-auto-update.service vpn-bot-v2-auto-update.timer; do
+  fetch "$path" "$work_dir/$path"
+done
+fetch db/init/001_baseline.sql "$work_dir/db/init/001_baseline.sql"
+fetch db/migrations/manifest.txt "$work_dir/db/migrations/manifest.txt"
+while IFS= read -r migration || [ -n "$migration" ]; do
+  [ -n "$migration" ] || continue
+  fetch "db/migrations/$migration" "$work_dir/db/migrations/$migration"
+done < "$work_dir/db/migrations/manifest.txt"
+cp "$work_dir/docker-compose.yml" "$work_dir/update.sh" "$work_dir/rollback.sh" \
+  "$work_dir/backup-postgres.sh" "$work_dir/restore-rehearsal.sh" "$work_dir/apply-runtime-settings.sh" \
+  "$work_dir/auto-update.sh" "$work_dir/host-nginx.example.conf" "$work_dir/.env.example" \
+  "$work_dir/vpn-bot-v2-auto-update.service" "$work_dir/vpn-bot-v2-auto-update.timer" "$install_dir/"
+mkdir -p "$install_dir/db/init" "$install_dir/db/migrations"
+cp "$work_dir/db/init/001_baseline.sql" "$install_dir/db/init/001_baseline.sql"
+cp "$work_dir/db/migrations/manifest.txt" "$install_dir/db/migrations/manifest.txt"
+cp "$work_dir/db/migrations/"*.sql "$install_dir/db/migrations/" 2>/dev/null || true
 mkdir -p "$install_dir/data/postgres" "$install_dir/data/redis" "$install_dir/backups"
 
 postgres_password=$(openssl rand -base64 36 | tr -d '\n' | tr '/+' '_-')

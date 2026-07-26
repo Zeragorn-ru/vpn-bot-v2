@@ -36,7 +36,11 @@ async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
         .context(format!("secret {key} not found in app_secrets"))
 }
 
-fn env_or_fallback(env_key: &str, db_value: Option<String>, fallback: Option<String>) -> Result<String> {
+fn env_or_fallback(
+    env_key: &str,
+    db_value: Option<String>,
+    fallback: Option<String>,
+) -> Result<String> {
     if let Ok(value) = env::var(env_key) {
         if !value.is_empty() {
             return Ok(value);
@@ -48,7 +52,9 @@ fn env_or_fallback(env_key: &str, db_value: Option<String>, fallback: Option<Str
     if let Some(value) = fallback.filter(|v| !v.is_empty()) {
         return Ok(value);
     }
-    Err(anyhow::anyhow!("{env_key} is required (set in env or app_secrets)"))
+    Err(anyhow::anyhow!(
+        "{env_key} is required (set in env or app_secrets)"
+    ))
 }
 
 #[tokio::main]
@@ -438,23 +444,56 @@ async fn complete_provisioning(
 }
 
 async fn load_remnawave_config(database: &PgPool) -> Result<RemnawaveConfig> {
-    let base_url = env_or_fallback("REMNAWAVE_BASE_URL",
-        load_secret_from_db(database, "REMNAWAVE_BASE_URL").await.ok(), None)?;
-    let api_token = env_or_fallback("REMNAWAVE_API_TOKEN",
-        load_secret_from_db(database, "REMNAWAVE_API_TOKEN").await.ok(), None)?;
-    let internal_squad_uuids = env_or_fallback("REMNAWAVE_INTERNAL_SQUAD_UUIDS",
-        load_secret_from_db(database, "REMNAWAVE_INTERNAL_SQUAD_UUIDS").await.ok(), Some(String::new()))?;
-    let external_squad_uuid = env_or_fallback("REMNAWAVE_EXTERNAL_SQUAD_UUID",
-        load_secret_from_db(database, "REMNAWAVE_EXTERNAL_SQUAD_UUID").await.ok(), None).ok();
-    let traffic_limit_strategy = env_or_fallback("REMNAWAVE_TRAFFIC_LIMIT_STRATEGY",
-        load_secret_from_db(database, "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY").await.ok(),
-        Some("NO_RESET".to_owned()))?;
-    let user_tag = env_or_fallback("REMNAWAVE_USER_TAG",
-        load_secret_from_db(database, "REMNAWAVE_USER_TAG").await.ok(),
-        Some("PAID".to_owned()))?;
-    let username_prefix = env_or_fallback("REMNAWAVE_USERNAME_PREFIX",
-        load_secret_from_db(database, "REMNAWAVE_USERNAME_PREFIX").await.ok(),
-        Some("vpn".to_owned()))?;
+    let base_url = env_or_fallback(
+        "REMNAWAVE_BASE_URL",
+        load_secret_from_db(database, "REMNAWAVE_BASE_URL")
+            .await
+            .ok(),
+        None,
+    )?;
+    let api_token = env_or_fallback(
+        "REMNAWAVE_API_TOKEN",
+        load_secret_from_db(database, "REMNAWAVE_API_TOKEN")
+            .await
+            .ok(),
+        None,
+    )?;
+    let internal_squad_uuids = env_or_fallback(
+        "REMNAWAVE_INTERNAL_SQUAD_UUIDS",
+        load_secret_from_db(database, "REMNAWAVE_INTERNAL_SQUAD_UUIDS")
+            .await
+            .ok(),
+        Some(String::new()),
+    )?;
+    let external_squad_uuid = env_or_fallback(
+        "REMNAWAVE_EXTERNAL_SQUAD_UUID",
+        load_secret_from_db(database, "REMNAWAVE_EXTERNAL_SQUAD_UUID")
+            .await
+            .ok(),
+        None,
+    )
+    .ok();
+    let traffic_limit_strategy = env_or_fallback(
+        "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY",
+        load_secret_from_db(database, "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY")
+            .await
+            .ok(),
+        Some("NO_RESET".to_owned()),
+    )?;
+    let user_tag = env_or_fallback(
+        "REMNAWAVE_USER_TAG",
+        load_secret_from_db(database, "REMNAWAVE_USER_TAG")
+            .await
+            .ok(),
+        Some("PAID".to_owned()),
+    )?;
+    let username_prefix = env_or_fallback(
+        "REMNAWAVE_USERNAME_PREFIX",
+        load_secret_from_db(database, "REMNAWAVE_USERNAME_PREFIX")
+            .await
+            .ok(),
+        Some("vpn".to_owned()),
+    )?;
     Ok(RemnawaveConfig {
         base_url,
         api_token,

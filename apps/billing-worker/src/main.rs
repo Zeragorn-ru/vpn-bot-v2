@@ -140,22 +140,37 @@ fn env_or_db(env_key: &str, db_value: Option<String>) -> Option<String> {
 }
 
 async fn load_configured_providers(database: &PgPool) -> Result<PaymentProviderRegistry> {
-    let crypto_pay_token = env_or_db("CRYPTO_PAY_TOKEN", load_secret_from_db(database, "CRYPTO_PAY_TOKEN").await)
-        .filter(|token| token != "replace-me");
-    let crypto_pay_base_url = env_or_db("CRYPTO_PAY_BASE_URL",
-        load_secret_from_db(database, "CRYPTO_PAY_BASE_URL").await)
-        .unwrap_or_else(|| "https://pay.crypt.bot/api".to_owned());
+    let crypto_pay_token = env_or_db(
+        "CRYPTO_PAY_TOKEN",
+        load_secret_from_db(database, "CRYPTO_PAY_TOKEN").await,
+    )
+    .filter(|token| token != "replace-me");
+    let crypto_pay_base_url = env_or_db(
+        "CRYPTO_PAY_BASE_URL",
+        load_secret_from_db(database, "CRYPTO_PAY_BASE_URL").await,
+    )
+    .unwrap_or_else(|| "https://pay.crypt.bot/api".to_owned());
     let crypto_pay = crypto_pay_token.map(|api_token| CryptoPayConfig {
         api_token,
         base_url: crypto_pay_base_url,
     });
-    let anore_key = env_or_db("ANORE_API_KEY", load_secret_from_db(database, "ANORE_API_KEY").await);
-    let anore_secret = env_or_db("ANORE_SIGNING_SECRET", load_secret_from_db(database, "ANORE_SIGNING_SECRET").await);
-    let anore_base_url = env_or_db("ANORE_BASE_URL",
-        load_secret_from_db(database, "ANORE_BASE_URL").await)
-        .unwrap_or_else(|| "https://api.anore.cc/v1".to_owned());
+    let anore_key = env_or_db(
+        "ANORE_API_KEY",
+        load_secret_from_db(database, "ANORE_API_KEY").await,
+    );
+    let anore_secret = env_or_db(
+        "ANORE_SIGNING_SECRET",
+        load_secret_from_db(database, "ANORE_SIGNING_SECRET").await,
+    );
+    let anore_base_url = env_or_db(
+        "ANORE_BASE_URL",
+        load_secret_from_db(database, "ANORE_BASE_URL").await,
+    )
+    .unwrap_or_else(|| "https://api.anore.cc/v1".to_owned());
     let anore = match (anore_key, anore_secret) {
-        (Some(api_key), Some(signing_secret)) if !api_key.is_empty() && !signing_secret.is_empty() => {
+        (Some(api_key), Some(signing_secret))
+            if !api_key.is_empty() && !signing_secret.is_empty() =>
+        {
             Some(AnoreConfig {
                 api_key,
                 signing_secret,
@@ -165,9 +180,12 @@ async fn load_configured_providers(database: &PgPool) -> Result<PaymentProviderR
         (None, None) => None,
         _ => anyhow::bail!("ANORE_API_KEY and ANORE_SIGNING_SECRET must be configured together"),
     };
-    let telegram_stars = env_or_db("TELEGRAM_BOT_TOKEN", load_secret_from_db(database, "TELEGRAM_BOT_TOKEN").await)
-        .filter(|token| token != "replace-me")
-        .map(|bot_token| TelegramStarsConfig { bot_token });
+    let telegram_stars = env_or_db(
+        "TELEGRAM_BOT_TOKEN",
+        load_secret_from_db(database, "TELEGRAM_BOT_TOKEN").await,
+    )
+    .filter(|token| token != "replace-me")
+    .map(|bot_token| TelegramStarsConfig { bot_token });
     PaymentProviderRegistry::from_settings(PaymentProviderSettings {
         crypto_pay,
         anore,

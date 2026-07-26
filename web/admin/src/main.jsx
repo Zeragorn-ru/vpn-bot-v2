@@ -5,17 +5,16 @@ import "../styles.css";
 const apiBase = window.VPN_API_BASE_URL || "/api/v1";
 const providerNames = { crypto_pay: "Crypto Pay", anore: "Anore", telegram_stars: "Telegram Stars" };
 const money = (value, currency = "RUB") => new Intl.NumberFormat("ru-RU", { style: "currency", currency, maximumFractionDigits: currency === "XTR" ? 0 : 2 }).format((value || 0) / (currency === "XTR" ? 1 : 100));
-const date = (value) => value ? new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value)) : "-";
+const date = (value) => value ? new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value)) : "—";
 const timeAgo = (value) => {
   if (!value) return "";
   const diff = Date.now() - new Date(value).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "только что";
-  if (mins < 60) return `${mins} мин назад`;
+  if (mins < 60) return `${mins} мин`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} ч назад`;
-  const days = Math.floor(hrs / 24);
-  return `${days} дн назад`;
+  if (hrs < 24) return `${hrs} ч`;
+  return `${Math.floor(hrs / 24)} дн`;
 };
 const label = (value) => ({ paid: "оплачен", pending: "ожидает", active: "активна", provisioning_pending: "в обработке", expired: "истекла", suspended: "приостановлена", failed: "ошибка", wallet_top_up: "пополнение", direct_purchase: "покупка", balance: "баланс", discount: "скидка" }[value] || String(value || "").replaceAll("_", " "));
 const initialTariff = { code: "", name: "", description: "", duration_days: "30", traffic_gb: "", position: "0", amount_rub: "", currency_code: "RUB", is_active: true };
@@ -28,6 +27,7 @@ const densities = ["compact", "comfortable", "spacious"];
 function State({ title, detail, action }) {
   return (
     <div className="state">
+      <i />
       <h1>{title}</h1>
       {detail && <p>{detail}</p>}
       {action && <button onClick={action}>Повторить</button>}
@@ -115,7 +115,7 @@ function App() {
   const navItems = [
     ["ГЛАВНОЕ", [["overview", "Обзор", "📊"], ["users", "Клиенты", "👤"]]],
     ["ОПЕРАЦИИ", [["payments", "Платежи", "💰"], ["subscriptions", "Подписки", "🔑"], ["tariffs", "Тарифы", "📋"], ["promos", "Промокоды", "🏷️"]]],
-    ["ДОСТУП", [["channels", "Каналы", "📢"], ["integrations", "Платежные системы", "🔌"]]],
+    ["ДОСТУП", [["channels", "Каналы", "📢"], ["integrations", "Интеграции", "🔌"]]],
     ["НАСТРОЙКИ", [["policies", "Правила", "⚙️"], ["runtime", "Среда", "🖥️"], ["audit", "Журнал", "📝"]]]
   ];
 
@@ -126,10 +126,10 @@ function App() {
     users: <Users data={data.users} onCreate={(body) => mutate("/admin/users", "POST", body, "Клиент создан.")} />,
     payments: <Invoices data={data.invoices} />,
     subscriptions: <Subscriptions data={data.subscriptions} />,
-    tariffs: <Tariffs items={data.tariffs} onSave={(body, id) => mutate(`/admin/tariffs${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Тариф обновлен." : "Тариф создан.")} />,
-    promos: <Promos items={data.promos} onSave={(body, id) => mutate(`/admin/promos${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Промокод обновлен." : "Промокод создан.")} />,
-    channels: <Channels items={data.channels} onSave={(body, id) => mutate(`/admin/required-channels${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Канал обновлен." : "Канал добавлен.")} />,
-    integrations: <Integrations items={data.providers} onToggle={(item) => mutate(`/admin/payment-providers/${item.provider_code}`, "PUT", { is_enabled: !item.is_enabled }, item.is_enabled ? "Провайдер выключен." : "Провайдер включен.")} />,
+    tariffs: <Tariffs items={data.tariffs} onSave={(body, id) => mutate(`/admin/tariffs${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Тариф обновлён." : "Тариф создан.")} />,
+    promos: <Promos items={data.promos} onSave={(body, id) => mutate(`/admin/promos${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Промокод обновлён." : "Промокод создан.")} />,
+    channels: <Channels items={data.channels} onSave={(body, id) => mutate(`/admin/required-channels${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Канал обновлён." : "Канал добавлен.")} />,
+    integrations: <Integrations items={data.providers} telegramTransport={data.telegramTransport} runtimeSettings={data.runtimeSettings} publicSettings={data.publicSettings} onToggle={(item) => mutate(`/admin/payment-providers/${item.provider_code}`, "PUT", { is_enabled: !item.is_enabled }, item.is_enabled ? "Провайдер выключен." : "Провайдер включен.")} />,
     policies: <Policies settings={data.settings} referrals={data.referralSettings} onSave={(path, body, message) => mutate(path, "PUT", body, message)} />,
     runtime: <Runtime data={data} onSave={(path, body, message) => mutate(path, "PUT", body, message)} />,
     audit: <Audit data={data.audit} />
@@ -160,14 +160,14 @@ function App() {
           <div className="topbar-left">
             <button className="btn-ghost" onClick={() => setMobileNav(!mobileNav)} style={{ display: "none" }} id="mobile-toggle">☰</button>
             <button className="cmd-trigger" onClick={() => setCmdOpen(true)}>
-              🔍 <span>Поиск страниц и действий...</span>
+              🔍 <span>Поиск...</span>
               <kbd>⌘K</kbd>
             </button>
           </div>
           <div className="topbar-right">
             <span className="live-dot">СЕССИЯ АКТИВНА</span>
             <div style={{ position: "relative" }}>
-              <button className="btn-ghost" onClick={() => setSettingsOpen(!settingsOpen)}>⚙ Настройки</button>
+              <button className="btn-ghost" onClick={() => setSettingsOpen(!settingsOpen)}>⚙</button>
               {settingsOpen && <SettingsPopover preset={preset} setPreset={setPreset} density={density} setDensity={setDensity} onClose={() => setSettingsOpen(false)} />}
             </div>
             <button className="btn-ghost" onClick={() => { sessionStorage.removeItem("vpn-admin-session"); setToken(null); setData(null); bootstrap(); }}>Выйти</button>
@@ -190,7 +190,7 @@ function SettingsPopover({ preset, setPreset, density, setDensity, onClose }) {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
-  const presetColors = { matrix: "#39d353", cyan: "#22d3ee", violet: "#a78bfa", amber: "#fbbf24", red: "#f87171", frost: "#94a3b8" };
+  const presetColors = { matrix: "#36d399", cyan: "#22d3ee", violet: "#a78bfa", amber: "#f0b429", red: "#ef5350", frost: "#90a4ae" };
   return (
     <div className="settings-popover" ref={ref}>
       <h3>Цветовая схема</h3>
@@ -214,27 +214,22 @@ function CommandPalette({ navItems, onNavigate, onClose }) {
   const [query, setQuery] = useState("");
   const [focusIdx, setFocusIdx] = useState(0);
   const inputRef = useRef(null);
-
   useEffect(() => { inputRef.current?.focus(); }, []);
-
   const filtered = useMemo(() => {
     if (!query) return navItems;
     const q = query.toLowerCase();
     return navItems.filter(([, title]) => title.toLowerCase().includes(q));
   }, [query, navItems]);
-
   useEffect(() => { setFocusIdx(0); }, [query]);
-
   const handleKey = (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); setFocusIdx((i) => Math.min(i + 1, filtered.length - 1)); }
     if (e.key === "ArrowUp") { e.preventDefault(); setFocusIdx((i) => Math.max(i - 1, 0)); }
-    if (e.key === "Enter" && filtered[focusIdx]) { onNavigate(filtered[focusIdx][0]); }
+    if (e.key === "Enter" && filtered[focusIdx]) onNavigate(filtered[focusIdx][0]);
   };
-
   return (
     <div className="cmd-overlay" onClick={onClose}>
       <div className="cmd-modal" onClick={(e) => e.stopPropagation()}>
-        <input ref={inputRef} className="cmd-input" placeholder="Введите команду или страницу..." value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKey} />
+        <input ref={inputRef} className="cmd-input" placeholder="Страница или команда..." value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={handleKey} />
         <div className="cmd-results">
           {filtered.length ? filtered.map(([id, title, icon], idx) => (
             <button key={id} className={`cmd-item ${idx === focusIdx ? "focused" : ""}`} onClick={() => onNavigate(id)}>
@@ -263,7 +258,7 @@ function AdminLogin({ setupRequired, error, onSubmit }) {
       <section className="login-card">
         <p className="eyebrow">VPN // CONTROL PLANE</p>
         <h1>{setupRequired ? "Создание главного администратора" : "Вход администратора"}</h1>
-        <p className="helper">{setupRequired ? "Эта учетная запись управляет доступом в панель." : "Используйте логин и пароль администратора."}</p>
+        <p className="helper">{setupRequired ? "Эта учётная запись управляет доступом в панель." : "Используйте логин и пароль администратора."}</p>
         <form onSubmit={submit}>
           <label>Логин<input value={login} autoComplete="username" minLength={3} onChange={(e) => setLogin(e.target.value)} required /></label>
           <label>Пароль<input value={password} type="password" autoComplete="current-password" minLength={12} onChange={(e) => setPassword(e.target.value)} required /></label>
@@ -278,20 +273,22 @@ function AdminLogin({ setupRequired, error, onSubmit }) {
 
 function Overview({ dashboard, analytics, audit }) {
   const recentAudits = audit?.items?.slice(0, 5) || [];
+  const d = dashboard || {};
+  const a = analytics || {};
   return (
     <>
       <section className="section-head">
         <div><p>ГЛАВНОЕ / ОБЗОР</p><h1>Операционный центр</h1><span>Ключевые показатели, денежный поток и регистрация клиентов.</span></div>
       </section>
       <section className="metric-grid">
-        <MetricCard icon="👥" label="Клиенты" value={dashboard.registered_users} sub="Всего зарегистрировано" />
-        <MetricCard icon="🔑" label="Активные подписки" value={dashboard.active_subscriptions} sub="Сейчас активны" />
-        <MetricCard icon="💰" label="Выручка" value={money(dashboard.paid_revenue_rub_minor)} sub="Оплаченные счета" />
-        <MetricCard icon="⏳" label="Ожидают" value={dashboard.provisioning_pending_subscriptions + dashboard.pending_invoices} sub="Требуют внимания" trend={dashboard.provisioning_pending_subscriptions > 0 ? "down" : "up"} trendLabel={dashboard.provisioning_pending_subscriptions > 0 ? "Есть очереди" : "Система в норме"} />
+        <MetricCard icon="👥" label="Клиенты" value={d.registered_users ?? 0} sub="Всего зарегистрировано" />
+        <MetricCard icon="🔑" label="Активные" value={d.active_subscriptions ?? 0} sub="Подписки сейчас" />
+        <MetricCard icon="💰" label="Выручка" value={money(d.paid_revenue_rub_minor)} sub="Оплаченные счета" />
+        <MetricCard icon="⏳" label="Ожидают" value={(d.provisioning_pending_subscriptions ?? 0) + (d.pending_invoices ?? 0)} sub="Требуют внимания" trend={(d.provisioning_pending_subscriptions ?? 0) > 0 ? "down" : "up"} trendLabel={(d.provisioning_pending_subscriptions ?? 0) > 0 ? "Есть очереди" : "Система в норме"} />
       </section>
       <section className="chart-grid">
-        <Chart title="Регистрации за 14 дней" points={analytics.registrations} />
-        <Chart title="Выручка за 14 дней" points={analytics.revenue_rub_minor} format={(v) => money(v)} />
+        <Chart title="Регистрации за 14 дней" points={a.registrations || []} />
+        <Chart title="Выручка за 14 дней" points={a.revenue_rub_minor || []} format={(v) => money(v)} />
       </section>
       <section className="pipeline-grid">
         <div className="pipeline">
@@ -312,14 +309,14 @@ function Overview({ dashboard, analytics, audit }) {
       </section>
       <section className="split-grid">
         <article className="panel">
-          <div className="panel-title"><div><p>ОЧЕРЕДЬ ОПЕРАТОРА</p><h2>Требует внимания</h2></div></div>
-          <div className="signal-row"><span>Ожидают оплаты</span><b>{dashboard.pending_invoices}</b></div>
-          <div className="signal-row"><span>Ожидают выдачи доступа</span><b>{dashboard.provisioning_pending_subscriptions}</b></div>
-          <div className="signal-row"><span>Оплаченные счета</span><b>{dashboard.paid_invoices}</b></div>
+          <div className="panel-title"><div><p>ОЧЕРЕДЬ</p><h2>Требует внимания</h2></div></div>
+          <div className="signal-row"><span>Ожидают оплаты</span><b>{d.pending_invoices ?? 0}</b></div>
+          <div className="signal-row"><span>Ожидают выдачи</span><b>{d.provisioning_pending_subscriptions ?? 0}</b></div>
+          <div className="signal-row"><span>Оплаченные счета</span><b>{d.paid_invoices ?? 0}</b></div>
         </article>
         <article className="panel">
           <p>ГРАНИЦА УПРАВЛЕНИЯ</p>
-          <h2>Прокси остается на хосте</h2>
+          <h2>Прокси остаётся на хосте</h2>
           <p className="helper">Домены, nginx и TLS управляются вручную на сервере. В панели редактируются только настройки приложения.</p>
         </article>
       </section>
@@ -330,32 +327,27 @@ function Overview({ dashboard, analytics, audit }) {
 function MetricCard({ icon, label, value, sub, trend, trendLabel }) {
   return (
     <article className="metric-card">
-      <div className="mc-head">
-        <span className="mc-label">{label}</span>
-        <span className="mc-icon">{icon}</span>
-      </div>
+      <div className="mc-head"><span className="mc-label">{label}</span><span className="mc-icon">{icon}</span></div>
       <div className="mc-value">{value}</div>
-      <div className="mc-sub">
-        {sub}
-        {trend && <span className={`mc-trend ${trend}`}>{trend === "up" ? "↑" : "↓"} {trendLabel}</span>}
-      </div>
+      <div className="mc-sub">{sub}{trend && <span className={`mc-trend ${trend}`}>{trend === "up" ? "↑" : "↓"} {trendLabel}</span>}</div>
     </article>
   );
 }
 
 function Chart({ title, points, format = (v) => v }) {
-  const max = Math.max(1, ...points.map((p) => Number(p.value)));
+  const safePoints = points || [];
+  const max = Math.max(1, ...safePoints.map((p) => Number(p.value)));
   return (
     <article className="chart">
       <div className="panel-title">
         <div><p>АНАЛИТИКА</p><h2>{title}</h2></div>
-        <b>{format(points.reduce((s, p) => s + Number(p.value), 0))}</b>
+        <b>{format(safePoints.reduce((s, p) => s + Number(p.value), 0))}</b>
       </div>
       <div className="bar-chart">
-        {points.map((p) => (
+        {safePoints.map((p) => (
           <div key={p.day} title={`${p.day}: ${format(p.value)}`}>
             <i style={{ height: `${Math.max(3, Number(p.value) / max * 100)}%` }} />
-            <small>{p.day.slice(5)}</small>
+            <small>{p.day?.slice(5)}</small>
           </div>
         ))}
       </div>
@@ -370,9 +362,10 @@ function Users({ data, onCreate }) {
     onCreate({ ...form, telegram_user_id: Number(form.telegram_user_id), username: form.username.replace(/^@/, "") || null });
     setForm({ telegram_user_id: "", username: "", first_name: "", language_code: "ru" });
   };
+  const items = data?.items || [];
   return (
     <>
-      <section className="section-head"><div><p>ГЛАВНОЕ / КЛИЕНТЫ</p><h1>Клиенты</h1><span>Клиенты обычно появляются после первого входа через Telegram. Здесь можно добавить клиента вручную.</span></div></section>
+      <section className="section-head"><div><p>ГЛАВНОЕ / КЛИЕНТЫ</p><h1>Клиенты</h1><span>Клиенты появляются после первого входа через Telegram. Здесь можно добавить вручную.</span></div></section>
       <section className="create-card">
         <h2>Добавить клиента</h2>
         <form className="inline-form" onSubmit={submit}>
@@ -380,11 +373,11 @@ function Users({ data, onCreate }) {
           <label>Username<input placeholder="@username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
           <label>Имя<input required placeholder="Иван" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} /></label>
           <label>Язык<select value={form.language_code} onChange={(e) => setForm({ ...form, language_code: e.target.value })}><option value="ru">Русский</option><option value="en">English</option></select></label>
-          <button>Создать клиента</button>
+          <button>Создать</button>
         </form>
       </section>
       <section className="card-grid">
-        {data.items.length ? data.items.map((item) => (
+        {items.length ? items.map((item) => (
           <article className="user-card" key={item.id}>
             <div><span className="avatar">{(item.first_name || "?")[0]}</span><span><strong>{item.username ? `@${item.username}` : item.first_name}</strong><small>Telegram ID: {item.telegram_user_id}</small></span></div>
             <b className="badge">{item.language_code}</b>
@@ -400,23 +393,37 @@ function Users({ data, onCreate }) {
 }
 
 function Invoices({ data }) {
+  const items = data?.items || [];
   return (
     <>
       <section className="section-head"><div><p>ОПЕРАЦИИ / ПЛАТЕЖИ</p><h1>Платежи</h1><span>Состояния счетов и история платежных провайдеров.</span></div></section>
-      <DataList data={data} render={(item) => (
-        <><div><p>{providerNames[item.provider] || label(item.provider)}</p><h2>{money(item.amount_minor, item.currency_code)}</h2><small>{label(item.purpose)} · {date(item.created_at)} · {item.username ? `@${item.username}` : `Telegram ${item.telegram_user_id}`}</small></div><b className={`badge ${item.status === "paid" ? "ok" : "warn"}`}>{label(item.status)}</b></>
-      )} />
+      <section className="data-list">
+        {items.length ? items.map((item) => (
+          <article className="data-card" key={item.id}>
+            <div><p>{providerNames[item.provider] || label(item.provider)}</p><h2>{money(item.amount_minor, item.currency_code)}</h2><small>{label(item.purpose)} · {date(item.created_at)} · {item.username ? `@${item.username}` : `Telegram ${item.telegram_user_id}`}</small></div>
+            <b className={`badge ${item.status === "paid" ? "ok" : "warn"}`}>{label(item.status)}</b>
+          </article>
+        )) : <p className="empty">Нет записей.</p>}
+      </section>
+      <Pager data={data} />
     </>
   );
 }
 
 function Subscriptions({ data }) {
+  const items = data?.items || [];
   return (
     <>
       <section className="section-head"><div><p>ОПЕРАЦИИ / ДОСТУП</p><h1>Подписки</h1><span>Жизненный цикл доступа и состояние выдачи конфигурации.</span></div></section>
-      <DataList data={data} render={(item) => (
-        <><div><p>{item.tariff_code || "Пробный доступ"}</p><h2>{item.username ? `@${item.username}` : `Telegram ${item.telegram_user_id}`}</h2><small>Действует до: {date(item.expires_at)}</small></div><b className={`badge ${item.status === "active" ? "ok" : "warn"}`}>{label(item.status)}</b></>
-      )} />
+      <section className="data-list">
+        {items.length ? items.map((item) => (
+          <article className="data-card" key={item.id}>
+            <div><p>{item.tariff_code || "Пробный доступ"}</p><h2>{item.username ? `@${item.username}` : `Telegram ${item.telegram_user_id}`}</h2><small>Действует до: {date(item.expires_at)}</small></div>
+            <b className={`badge ${item.status === "active" ? "ok" : "warn"}`}>{label(item.status)}</b>
+          </article>
+        )) : <p className="empty">Нет записей.</p>}
+      </section>
+      <Pager data={data} />
     </>
   );
 }
@@ -449,6 +456,7 @@ function ResourcePage({ kicker, title, description, items, initial, decode, onSa
   const [editing, setEditing] = useState(null);
   const submit = (event) => { event.preventDefault(); onSave(form, editing?.id); setForm(initial); setEditing(null); };
   const edit = (item) => { setEditing(item); setForm(decode(item)); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const safeItems = items || [];
   return (
     <>
       <section className="section-head"><div><p>{kicker}</p><h1>{title}</h1><span>{description}</span></div></section>
@@ -465,7 +473,7 @@ function ResourcePage({ kicker, title, description, items, initial, decode, onSa
         </form>
       </section>
       <section className="data-list">
-        {items.length ? items.map((item) => (
+        {safeItems.length ? safeItems.map((item) => (
           <article className="data-card editable" key={item.id} onClick={() => edit(item)}>
             {render(item)}
             <button className="secondary" onClick={(e) => { e.stopPropagation(); edit(item); }}>Изменить</button>
@@ -476,14 +484,51 @@ function ResourcePage({ kicker, title, description, items, initial, decode, onSa
   );
 }
 
-function Integrations({ items, onToggle }) {
+function Integrations({ items, onToggle, telegramTransport, runtimeSettings, publicSettings }) {
+  const tt = telegramTransport || {};
+  const rs = runtimeSettings || {};
+  const ps = publicSettings || {};
   return (
     <>
-      <section className="section-head"><div><p>ДОСТУП / ПЛАТЕЖИ</p><h1>Платежные системы</h1><span>Включайте только настроенные провайдеры с заданными секретами.</span></div></section>
+      <section className="section-head"><div><p>ДОСТУП / ИНТЕГРАЦИИ</p><h1>Интеграции</h1><span>Состояние внешних сервисов и подключений.</span></div></section>
+      <section className="status-grid">
+        <article className="status-card">
+          <div className="sc-head"><span className="sc-title">Telegram Bot</span><span className="badge ok">Активен</span></div>
+          <div className="sc-value">{tt.mode === "webhook" ? "Webhook" : "Polling"}</div>
+          <div className="sc-desc">Режим транспорта: <strong>{tt.mode || "—"}</strong>. Токен задаётся переменной <code>TELEGRAM_BOT_TOKEN</code> при запуске контейнера.</div>
+        </article>
+        <article className="status-card">
+          <div className="sc-head"><span className="sc-title">Remnawave</span><span className="badge ok">Подключён</span></div>
+          <div className="sc-value">VPN Backend</div>
+          <div className="sc-desc">Выдача конфигураций и управление доступом через Remnawave. URL подписки: <strong>{ps.subscription_public_url || "—"}</strong></div>
+        </article>
+        <article className="status-card">
+          <div className="sc-head"><span className="sc-title">Webhook</span><span className={`badge ${tt.mode === "webhook" ? "ok" : "warn"}`}>{tt.mode === "webhook" ? "Активен" : "Отключён"}</span></div>
+          <div className="sc-value">{ps.telegram_webhook_url || "—"}</div>
+          <div className="sc-desc">Адрес приёма обновлений Telegram. Работает при режиме webhook.</div>
+        </article>
+      </section>
+      <section className="status-grid">
+        <article className="status-card">
+          <div className="sc-head"><span className="sc-title">Порты</span><span className="badge ok">Настроены</span></div>
+          <div className="sc-value">API {rs.api_host_port || "—"} / App {rs.mini_app_host_port || "—"} / Admin {rs.admin_host_port || "—"}</div>
+          <div className="sc-desc">Локальные порты контейнеров. Изменяются в разделе «Среда».</div>
+        </article>
+        <article className="status-card">
+          <div className="sc-head"><span className="sc-title">Шифрование</span><span className="badge ok">AES-256-GCM</span></div>
+          <div className="sc-value">Ключ защищён</div>
+          <div className="sc-desc"><code>APPLICATION_ENCRYPTION_KEY</code> задаётся переменной окружения. Используется для шифрования учётных данных VPN.</div>
+        </article>
+        <article className="status-card">
+          <div className="sc-head"><span className="sc-title">Mini App</span><span className={`badge ${ps.mini_app_url ? "ok" : "warn"}`}>{ps.mini_app_url ? "Настроен" : "Не задан"}</span></div>
+          <div className="sc-value">{ps.mini_app_url || "—"}</div>
+          <div className="sc-desc">Публичный адрес клиентского приложения.</div>
+        </article>
+      </section>
       <section className="provider-grid">
-        {items.map((item) => (
+        {(items || []).map((item) => (
           <article className="provider-card" key={item.provider_code}>
-            <div><p>{providerNames[item.provider_code] || item.provider_code}</p><h2>{item.is_enabled ? "Включен" : "Выключен"}</h2><small>{item.is_configured ? "Учетные данные настроены" : "Не настроен"}</small></div>
+            <div><p>{providerNames[item.provider_code] || item.provider_code}</p><h2>{item.is_enabled ? "Включён" : "Выключен"}</h2><small>{item.is_configured ? "Учётные данные настроены" : "Не настроен"}</small></div>
             <button className={item.is_enabled ? "secondary" : "primary"} disabled={!item.is_configured} onClick={() => onToggle(item)}>{item.is_enabled ? "Выключить" : "Включить"}</button>
           </article>
         ))}
@@ -493,27 +538,32 @@ function Integrations({ items, onToggle }) {
 }
 
 function Policies({ settings, referrals, onSave }) {
+  const s = settings || {};
+  const r = referrals || {};
   return (
     <>
       <section className="section-head"><div><p>НАСТРОЙКИ / КОММЕРЦИЯ</p><h1>Правила</h1><span>Значения применяются к новым сценариям покупки и пробного доступа.</span></div></section>
       <section className="two-panel">
-        <SettingsForm title="Пробный доступ" value={{ duration_days: settings.duration_seconds / 86400, traffic_gb: settings.traffic_bytes / 1024 ** 3 }} fields={["duration_days", "traffic_gb"]} labels={{ duration_days: "Срок, дней", traffic_gb: "Трафик, ГБ" }} onSave={(value) => onSave("/admin/trial-settings", { duration_seconds: Number(value.duration_days) * 86400, traffic_bytes: Number(value.traffic_gb) * 1024 ** 3 }, "Настройки пробного доступа сохранены.")} />
-        <SettingsForm title="Реферальная программа" value={referrals} fields={["percent"]} labels={{ percent: "Вознаграждение, %" }} onSave={(value) => onSave("/admin/referral-settings", { percent: Number(value.percent) }, "Реферальное правило сохранено.")} />
+        <SettingsForm title="Пробный доступ" value={{ duration_days: (s.duration_seconds || 0) / 86400, traffic_gb: (s.traffic_bytes || 0) / 1024 ** 3 }} fields={["duration_days", "traffic_gb"]} labels={{ duration_days: "Срок, дней", traffic_gb: "Трафик, ГБ" }} onSave={(value) => onSave("/admin/trial-settings", { duration_seconds: Number(value.duration_days) * 86400, traffic_bytes: Number(value.traffic_gb) * 1024 ** 3 }, "Настройки пробного доступа сохранены.")} />
+        <SettingsForm title="Реферальная программа" value={r} fields={["percent"]} labels={{ percent: "Вознаграждение, %" }} onSave={(value) => onSave("/admin/referral-settings", { percent: Number(value.percent) }, "Реферальное правило сохранено.")} />
       </section>
     </>
   );
 }
 
 function Runtime({ data, onSave }) {
+  const ps = data?.publicSettings || {};
+  const rs = data?.runtimeSettings || {};
+  const tt = data?.telegramTransport || {};
   return (
     <>
       <section className="section-head"><div><p>НАСТРОЙКИ / СРЕДА</p><h1>Публичные адреса и транспорт</h1><span>Nginx, DNS и TLS остаются под ручным управлением на хосте.</span></div></section>
       <section className="two-panel">
-        <SettingsForm title="Публичные адреса" value={{ ...data.publicSettings, cors_origins: data.publicSettings.cors_origins.join(", ") }} fields={["mini_app_url", "admin_url", "subscription_public_url", "telegram_webhook_url", "cors_origins", "support_url"]} labels={{ mini_app_url: "Mini App URL", admin_url: "Админка URL", subscription_public_url: "URL подписки", telegram_webhook_url: "Webhook Telegram", cors_origins: "CORS origins", support_url: "Поддержка" }} onSave={(value) => onSave("/admin/public-settings", { ...value, cors_origins: value.cors_origins.split(",").map((i) => i.trim()).filter(Boolean), support_url: value.support_url || null }, "Публичные адреса сохранены.")} />
-        <SettingsForm title="Локальные порты" value={data.runtimeSettings} fields={["api_host_port", "mini_app_host_port", "admin_host_port", "telegram_webhook_host_port"]} labels={{ api_host_port: "API", mini_app_host_port: "Mini App", admin_host_port: "Админка", telegram_webhook_host_port: "Telegram webhook" }} onSave={(value) => onSave("/admin/runtime-settings", numberFields(value), "План портов сохранен. Перезапустите Compose и обновите nginx.")} />
+        <SettingsForm title="Публичные адреса" value={{ ...ps, cors_origins: Array.isArray(ps.cors_origins) ? ps.cors_origins.join(", ") : "" }} fields={["mini_app_url", "admin_url", "subscription_public_url", "telegram_webhook_url", "cors_origins", "support_url"]} labels={{ mini_app_url: "Mini App URL", admin_url: "Админка URL", subscription_public_url: "URL подписки", telegram_webhook_url: "Webhook Telegram", cors_origins: "CORS origins", support_url: "Поддержка" }} onSave={(value) => onSave("/admin/public-settings", { ...value, cors_origins: value.cors_origins.split(",").map((i) => i.trim()).filter(Boolean), support_url: value.support_url || null }, "Публичные адреса сохранены.")} />
+        <SettingsForm title="Локальные порты" value={rs} fields={["api_host_port", "mini_app_host_port", "admin_host_port", "telegram_webhook_host_port"]} labels={{ api_host_port: "API", mini_app_host_port: "Mini App", admin_host_port: "Админка", telegram_webhook_host_port: "Telegram webhook" }} onSave={(value) => onSave("/admin/runtime-settings", numberFields(value), "План портов сохранён. Перезапустите Compose и обновите nginx.")} />
       </section>
       <section className="two-panel">
-        <SettingsForm title="Транспорт Telegram" value={data.telegramTransport} fields={["mode"]} options={{ mode: [["polling", "Polling"], ["webhook", "Webhook"]] }} labels={{ mode: "Режим" }} onSave={(value) => onSave("/admin/telegram-transport", value, "Транспорт Telegram сохранен. Перезапустите бота.")} />
+        <SettingsForm title="Транспорт Telegram" value={tt} fields={["mode"]} options={{ mode: [["polling", "Polling"], ["webhook", "Webhook"]] }} labels={{ mode: "Режим" }} onSave={(value) => onSave("/admin/telegram-transport", value, "Транспорт Telegram сохранён. Перезапустите бота.")} />
         <article className="panel"><p>ГРАНИЦА ХОСТА</p><h2>Reverse proxy вне приложения</h2><p className="helper">Панель хранит URL и рекомендуемые порты, но не изменяет конфигурацию nginx, сертификаты или DNS.</p></article>
       </section>
     </>
@@ -537,25 +587,26 @@ function SettingsForm({ title, value, fields, labels = {}, options, onSave }) {
 }
 
 function Audit({ data }) {
+  const items = data?.items || [];
   return (
     <>
       <section className="section-head"><div><p>НАСТРОЙКИ / АУДИТ</p><h1>Журнал аудита</h1><span>Последние привилегированные изменения в панели управления.</span></div></section>
-      <DataList data={data} render={(item) => (
-        <><div><p>{item.target_type}</p><h2>{item.action}</h2><small>{date(item.created_at)}</small></div><b className="badge">{item.actor_user_id ? "админ" : "система"}</b></>
-      )} />
+      <section className="data-list">
+        {items.length ? items.map((item) => (
+          <article className="data-card" key={item.id}>
+            <div><p>{item.target_type}</p><h2>{item.action}</h2><small>{date(item.created_at)}</small></div>
+            <b className="badge">{item.actor_user_id ? "админ" : "система"}</b>
+          </article>
+        )) : <p className="empty">Нет записей.</p>}
+      </section>
+      <Pager data={data} />
     </>
   );
 }
 
-function DataList({ data, render }) {
-  return (
-    <>
-      <section className="data-list">
-        {data.items.length ? data.items.map((item) => <article className="data-card" key={item.id}>{render(item)}</article>) : <p className="empty">Нет записей.</p>}
-      </section>
-      <div className="pager"><span>{data.total ? `${data.offset + 1}-${Math.min(data.offset + data.limit, data.total)} из ${data.total}` : "0 записей"}</span></div>
-    </>
-  );
+function Pager({ data }) {
+  if (!data || !data.total) return null;
+  return <div className="pager">{data.offset + 1}–{Math.min(data.offset + data.limit, data.total)} из {data.total}</div>;
 }
 
 const numberFields = (value) => Object.fromEntries(Object.entries(value).map(([k, v]) => [k, /^\d+$/.test(String(v)) ? Number(v) : v]));

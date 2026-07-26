@@ -662,7 +662,10 @@ async fn main() -> Result<()> {
             "/api/v1/admin/required-channels/{id}",
             put(update_admin_required_channel),
         )
-        .route("/api/v1/admin/users", get(admin_users).post(create_admin_user))
+        .route(
+            "/api/v1/admin/users",
+            get(admin_users).post(create_admin_user),
+        )
         .route("/api/v1/admin/dashboard", get(admin_dashboard))
         .route("/api/v1/admin/analytics", get(admin_analytics))
         .route("/api/v1/admin/audit", get(admin_audit))
@@ -1959,7 +1962,9 @@ async fn create_admin_user(
     .await
     .map_err(database_error)?;
     if existing {
-        return Err(ApiError::conflict("A client with this Telegram ID already exists."));
+        return Err(ApiError::conflict(
+            "A client with this Telegram ID already exists.",
+        ));
     }
     sqlx::query("INSERT INTO users (id, telegram_user_id) VALUES ($1, $2)")
         .bind(user_id)

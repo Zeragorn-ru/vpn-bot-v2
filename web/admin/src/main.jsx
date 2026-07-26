@@ -66,8 +66,9 @@ function App() {
 
   const load = async (session) => {
     const get = (path) => request(path, {}, session);
+    const safeGet = async (path) => { try { return await get(path); } catch { return null; } };
     const [dashboard, analytics, settings, referralSettings, providers, publicSettings, runtimeSettings, telegramTransport, tariffs, channels, promos, users, subscriptions, invoices, audit, secrets] = await Promise.all([
-      get("/admin/dashboard"), get("/admin/analytics"), get("/admin/trial-settings"), get("/admin/referral-settings"), get("/admin/payment-providers"), get("/admin/public-settings"), get("/admin/runtime-settings"), get("/admin/telegram-transport"), get("/admin/tariffs"), get("/admin/required-channels"), get("/admin/promos"), get("/admin/users?limit=50&offset=0"), get("/admin/subscriptions?limit=50&offset=0"), get("/admin/invoices?limit=50&offset=0"), get("/admin/audit?limit=50&offset=0"), get("/admin/secrets")
+      get("/admin/dashboard"), get("/admin/analytics"), get("/admin/trial-settings"), get("/admin/referral-settings"), get("/admin/payment-providers"), get("/admin/public-settings"), get("/admin/runtime-settings"), get("/admin/telegram-transport"), get("/admin/tariffs"), get("/admin/required-channels"), get("/admin/promos"), get("/admin/users?limit=50&offset=0"), get("/admin/subscriptions?limit=50&offset=0"), get("/admin/invoices?limit=50&offset=0"), get("/admin/audit?limit=50&offset=0"), safeGet("/admin/secrets")
     ]);
     setData({ dashboard, analytics, settings, referralSettings, providers, publicSettings, runtimeSettings, telegramTransport, tariffs, channels, promos, users, subscriptions, invoices, audit, secrets });
   };
@@ -116,7 +117,7 @@ function App() {
     ["ГЛАВНОЕ", [["overview", "Обзор", "📊"], ["users", "Клиенты", "👤"]]],
     ["ОПЕРАЦИИ", [["payments", "Платежи", "💰"], ["subscriptions", "Подписки", "🔑"], ["tariffs", "Тарифы", "📋"], ["promos", "Промокоды", "🏷️"]]],
     ["ДОСТУП", [["channels", "Каналы", "📢"], ["integrations", "Интеграции", "🔌"]]],
-    ["НАСТРОЙКИ", [["policies", "Правила", "⚙️"], ["runtime", "Среда", "🖥️"], ["audit", "Журнал", "📝"]]]
+    ["НАСТРОЙКИ", [["policies", "Правила", "⚙️"], ["runtime", "Среда", "🖥️"], ["secrets", "Секреты", "🔐"], ["audit", "Журнал", "📝"]]]
   ];
 
   const flatNav = navItems.flatMap(([, items]) => items);
@@ -129,9 +130,10 @@ function App() {
     tariffs: <Tariffs items={data.tariffs} onSave={(body, id) => mutate(`/admin/tariffs${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Тариф обновлён." : "Тариф создан.")} />,
     promos: <Promos items={data.promos} onSave={(body, id) => mutate(`/admin/promos${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Промокод обновлён." : "Промокод создан.")} />,
     channels: <Channels items={data.channels} onSave={(body, id) => mutate(`/admin/required-channels${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Канал обновлён." : "Канал добавлен.")} />,
-    integrations: <Integrations items={data.providers} telegramTransport={data.telegramTransport} runtimeSettings={data.runtimeSettings} publicSettings={data.publicSettings} secrets={data.secrets} onSaveSecret={(key, value) => mutate("/admin/secrets", "PUT", { key, value }, `Секрет ${key} обновлён. Требуется перезапуск.`)} onToggle={(item) => mutate(`/admin/payment-providers/${item.provider_code}`, "PUT", { is_enabled: !item.is_enabled }, item.is_enabled ? "Провайдер выключен." : "Провайдер включен.")} />,
+    integrations: <Integrations items={data.providers} telegramTransport={data.telegramTransport} runtimeSettings={data.runtimeSettings} publicSettings={data.publicSettings} onToggle={(item) => mutate(`/admin/payment-providers/${item.provider_code}`, "PUT", { is_enabled: !item.is_enabled }, item.is_enabled ? "Провайдер выключен." : "Провайдер включен.")} />,
     policies: <Policies settings={data.settings} referrals={data.referralSettings} onSave={(path, body, message) => mutate(path, "PUT", body, message)} />,
     runtime: <Runtime data={data} onSave={(path, body, message) => mutate(path, "PUT", body, message)} />,
+    secrets: <SecretsPage secrets={data.secrets} onSave={(key, value) => mutate("/admin/secrets", "PUT", { key, value }, `Секрет ${key} обновлён. Требуется перезапуск API.`)} />,
     audit: <Audit data={data.audit} />
   };
 
@@ -366,14 +368,14 @@ function Users({ data, onCreate }) {
   return (
     <>
       <section className="section-head"><div><p>ГЛАВНОЕ / КЛИЕНТЫ</p><h1>Клиенты</h1><span>Клиенты появляются после первого входа через Telegram. Здесь можно добавить вручную.</span></div></section>
-      <section className="create-card">
-        <h2>Добавить клиента</h2>
-        <form className="inline-form" onSubmit={submit}>
+      <section className="form-card">
+        <div className="form-title"><h2>Добавить клиента</h2></div>
+        <form className="form-grid resource-form" onSubmit={submit}>
           <label>Telegram ID<input required inputMode="numeric" placeholder="123456789" value={form.telegram_user_id} onChange={(e) => setForm({ ...form, telegram_user_id: e.target.value })} /></label>
           <label>Username<input placeholder="@username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
           <label>Имя<input required placeholder="Иван" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} /></label>
           <label>Язык<select value={form.language_code} onChange={(e) => setForm({ ...form, language_code: e.target.value })}><option value="ru">Русский</option><option value="en">English</option></select></label>
-          <button>Создать</button>
+          <div className="form-actions"><button className="primary">Создать</button></div>
         </form>
       </section>
       <section className="card-grid">
@@ -460,16 +462,16 @@ function ResourcePage({ kicker, title, description, items, initial, decode, onSa
   return (
     <>
       <section className="section-head"><div><p>{kicker}</p><h1>{title}</h1><span>{description}</span></div></section>
-      <section className="create-card">
-        <div className="form-title"><h2>{editing ? "Редактирование" : "Создание"}</h2>{editing && <button className="secondary" type="button" onClick={() => { setEditing(null); setForm(initial); }}>Отменить</button>}</div>
-        <form className="inline-form resource-form" onSubmit={submit}>
+      <section className="form-card">
+        <div className="form-title"><h2>{editing ? "Редактирование" : "Создание"}</h2>{editing && <button className="secondary" type="button" onClick={() => { setEditing(null); setForm(initial); }}>Отмена</button>}</div>
+        <form className="form-grid resource-form" onSubmit={submit}>
           {fields.map(([key, lbl, type = "text", options]) => (
             <label key={key}>{lbl}
               {type === "select" ? <select value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}>{options.map(([v, t]) => <option value={v} key={v}>{t}</option>)}</select> : <input type={type} required={key === "code" || key === "title" || key === "name"} value={form[key] ?? ""} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />}
             </label>
           ))}
           <label className="check"><input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />Активен</label>
-          <button>{editing ? "Сохранить" : "Создать"}</button>
+          <div className="form-actions"><button className="primary">{editing ? "Сохранить" : "Создать"}</button></div>
         </form>
       </section>
       <section className="data-list">
@@ -484,7 +486,7 @@ function ResourcePage({ kicker, title, description, items, initial, decode, onSa
   );
 }
 
-function Integrations({ items, onToggle, telegramTransport, runtimeSettings, publicSettings, secrets, onSaveSecret }) {
+function Integrations({ items, onToggle, telegramTransport, runtimeSettings, publicSettings }) {
   const tt = telegramTransport || {};
   const rs = runtimeSettings || {};
   const ps = publicSettings || {};
@@ -508,7 +510,6 @@ function Integrations({ items, onToggle, telegramTransport, runtimeSettings, pub
           <div className="sc-desc"><code>APPLICATION_ENCRYPTION_KEY</code> — 32-byte ключ.</div>
         </article>
       </section>
-      <Secrets items={secrets?.items || []} onSave={onSaveSecret} />
       <section className="status-grid">
         <article className="status-card">
           <div className="sc-head"><span className="sc-title">Порты</span><span className="badge ok">Настроены</span></div>
@@ -534,45 +535,62 @@ function Integrations({ items, onToggle, telegramTransport, runtimeSettings, pub
   );
 }
 
-function Secrets({ items, onSave }) {
+function SecretsPage({ secrets, onSave }) {
   const [editing, setEditing] = useState({});
   const [saving, setSaving] = useState(null);
+  const items = secrets?.items || [];
   const handleSave = async (key) => {
     setSaving(key);
     await onSave(key, editing[key] || "");
     setSaving(null);
     setEditing((prev) => { const next = { ...prev }; delete next[key]; return next; });
   };
+  const handleToggle = (key) => {
+    const input = document.getElementById(`secret-${key}`);
+    if (input) input.type = input.type === "password" ? "text" : "password";
+  };
   return (
-    <section style={{ marginBottom: "var(--gap)" }}>
-      <div style={{ marginBottom: 12 }}><h2 style={{ margin: "0 0 4px", fontSize: "var(--font-lg)", fontWeight: 700 }}>Секреты</h2><p style={{ margin: 0, fontSize: "var(--font-sm)", color: "var(--muted)" }}>Значения замаскированы. Введите новое значение для замены. Требуется перезапуск API для применения.</p></div>
-      <div className="status-grid">
-        {items.map((item) => (
-          <article className="status-card" key={item.key}>
-            <div className="sc-head">
-              <span className="sc-title">{item.label}</span>
-              <span className={`badge ${item.is_set ? "ok" : "warn"}`}>{item.is_set ? "Задан" : "Не задан"}</span>
-            </div>
-            <p style={{ margin: "0 0 8px", fontSize: "var(--font-xs)", color: "var(--muted)", lineHeight: 1.4 }}>{item.description}</p>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                type="password"
-                placeholder={item.is_set ? "••••••••" : "Введите значение..."}
-                value={editing[item.key] ?? ""}
-                onChange={(e) => setEditing((prev) => ({ ...prev, [item.key]: e.target.value }))}
-                style={{ flex: 1, padding: "6px 10px", background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", fontSize: "var(--font-sm)", outline: "none" }}
-              />
-              <button
-                className="primary"
-                disabled={!editing[item.key] || saving === item.key}
-                onClick={() => handleSave(item.key)}
-                style={{ padding: "6px 14px", fontSize: "var(--font-xs)", whiteSpace: "nowrap" }}
-              >{saving === item.key ? "..." : "Заменить"}</button>
-            </div>
-          </article>
-        ))}
-      </div>
-    </section>
+    <>
+      <section className="section-head">
+        <div><p>НАСТРОЙКИ / СЕКРЕТЫ</p><h1>Управление секретами</h1><span>API-ключи и токены хранятся в БД. Значения замаскированы и никогда не отображаются. Требуется перезапуск API после изменения.</span></div>
+      </section>
+      {!items.length ? (
+        <section className="form-card">
+          <p style={{ color: "var(--muted)", fontSize: "var(--font-sm)" }}>Секреты недоступны. Обновите бинарник API — эндпоинт <code>/admin/secrets</code> вернул 404.</p>
+        </section>
+      ) : (
+        <section className="status-grid">
+          {items.map((item) => (
+            <article className="status-card" key={item.key}>
+              <div className="sc-head">
+                <span className="sc-title">{item.label}</span>
+                <span className={`badge ${item.is_set ? "ok" : "warn"}`}>{item.is_set ? "Задан" : "Не задан"}</span>
+              </div>
+              <p style={{ margin: "0 0 8px", fontSize: "var(--font-xs)", color: "var(--muted)", lineHeight: 1.4 }}>{item.description}</p>
+              <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input
+                    id={`secret-${item.key}`}
+                    type="password"
+                    placeholder={item.is_set ? "••••••••" : "Введите значение..."}
+                    value={editing[item.key] ?? ""}
+                    onChange={(e) => setEditing((prev) => ({ ...prev, [item.key]: e.target.value }))}
+                    style={{ width: "100%", padding: "8px 32px 8px 10px", background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", fontSize: "var(--font-sm)", outline: "none", boxSizing: "border-box" }}
+                  />
+                  <button type="button" onClick={() => handleToggle(item.key)} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 14, padding: 4 }} title="Показать/скрыть">👁</button>
+                </div>
+                <button
+                  className="primary"
+                  disabled={!editing[item.key] || saving === item.key}
+                  onClick={() => handleSave(item.key)}
+                  style={{ padding: "8px 16px", fontSize: "var(--font-xs)", whiteSpace: "nowrap", borderRadius: 6 }}
+                >{saving === item.key ? "..." : "Заменить"}</button>
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
+    </>
   );
 }
 
@@ -614,12 +632,14 @@ function SettingsForm({ title, value, fields, labels = {}, options, onSave }) {
   useEffect(() => setForm(value), [value]);
   return (
     <form className="form-card" onSubmit={(e) => { e.preventDefault(); onSave(form); }}>
-      <div className="form-head"><div><p>КОНФИГУРАЦИЯ</p><h2>{title}</h2></div></div>
-      {fields.map((field) => (
-        <label key={field}>{labels[field] || field}
-          {options?.[field] ? <select value={form[field] || ""} onChange={(e) => setForm({ ...form, [field]: e.target.value })}>{options[field].map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select> : <input value={form[field] ?? ""} onChange={(e) => setForm({ ...form, [field]: e.target.value })} />}
-        </label>
-      ))}
+      <div className="form-head"><p>КОНФИГУРАЦИЯ</p><h2>{title}</h2></div>
+      <div className="form-grid">
+        {fields.map((field) => (
+          <label key={field}>{labels[field] || field}
+            {options?.[field] ? <select value={form[field] || ""} onChange={(e) => setForm({ ...form, [field]: e.target.value })}>{options[field].map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select> : <input value={form[field] ?? ""} onChange={(e) => setForm({ ...form, [field]: e.target.value })} />}
+          </label>
+        ))}
+      </div>
       <div className="form-actions"><button className="primary">Сохранить</button></div>
     </form>
   );

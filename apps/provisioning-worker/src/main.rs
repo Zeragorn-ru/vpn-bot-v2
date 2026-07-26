@@ -66,7 +66,29 @@ async fn main() -> Result<()> {
     let pool = connect(&database_url)
         .await
         .context("database connection failed")?;
-    let provider = RemnawaveProvider::new(load_remnawave_config(&pool).await?)?;
+    let provider = match load_remnawave_config(&pool).await {
+        Ok(config) => Some(RemnawaveProvider::new(config)?),
+        Err(error) => {
+            error!(%error, "REMNAWAVE not configured, provisioning disabled");
+            None
+        }
+    };
+    if provider.is_none() {
+        info!("provisioning worker started (disabled)");
+        let mut ticker = interval(Duration::from_secs(30));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                result = tokio::signal::ctrl_c() => {
+                    result.context("failed to wait for signal")?;
+                    break;
+                }
+            }
+        }
+        return Ok(());
+    }
+    let provider = provider.unwrap();
 
     info!("provisioning worker started");
     let mut ticker = interval(Duration::from_secs(5));

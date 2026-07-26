@@ -8,7 +8,7 @@ Requirements: Linux host, Docker Engine with Compose plugin, `curl`, `openssl`, 
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Zeragorn-ru/vpn-bot-v2/main/setup.sh -o /tmp/vpn-bot-v2-setup.sh
-sudo sh /tmp/vpn-bot-v2-setup.sh
+sudo bash /tmp/vpn-bot-v2-setup.sh
 ```
 
 The installer downloads only the runtime files it needs through the GitHub Contents API. It asks for one absolute installation directory and whether to enable automatic updates, generates database credentials and the encryption key, starts the stack, and leaves all services bound to loopback only.

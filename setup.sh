@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -eu
 
 repository=${VPN_BOT_REPOSITORY:-Zeragorn-ru/vpn-bot-v2}

@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -eu
 
 backup_file=${1:?usage: restore-rehearsal.sh <postgres-custom-format-backup>}

@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -eu
 
 backup_dir=${POSTGRES_BACKUP_DIR:-./backups}

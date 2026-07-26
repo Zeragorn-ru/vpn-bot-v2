@@ -459,10 +459,54 @@ struct AdminDailyMetric {
     value: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct AnalyticsQuery {
+    #[serde(default)]
+    days: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminMetricDelta {
+    current: i64,
+    previous: i64,
+    change_percent: Option<f64>,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct AdminBreakdownEntry {
+    key: String,
+    value: i64,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct AdminTariffPerformance {
+    code: String,
+    subscriptions: i64,
+    revenue_minor: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminAnalyticsTotals {
+    registrations: AdminMetricDelta,
+    revenue_rub_minor: AdminMetricDelta,
+    paid_invoices: AdminMetricDelta,
+    subscriptions: AdminMetricDelta,
+    trials: AdminMetricDelta,
+}
+
 #[derive(Debug, Serialize)]
 struct AdminAnalyticsResponse {
+    period_days: i64,
     registrations: Vec<AdminDailyMetric>,
     revenue_rub_minor: Vec<AdminDailyMetric>,
+    paid_invoices: Vec<AdminDailyMetric>,
+    new_subscriptions: Vec<AdminDailyMetric>,
+    trials: Vec<AdminDailyMetric>,
+    totals: AdminAnalyticsTotals,
+    revenue_by_provider: Vec<AdminBreakdownEntry>,
+    invoices_by_status: Vec<AdminBreakdownEntry>,
+    subscriptions_by_status: Vec<AdminBreakdownEntry>,
+    top_tariffs: Vec<AdminTariffPerformance>,
 }
 
 #[derive(Debug, FromRow, Serialize)]
@@ -876,6 +920,7 @@ async fn openapi_document() -> Json<Value> {
             "/api/v1/invoices/{id}": {"get": {"tags": ["Payments"], "summary": "Get an owner-scoped invoice", "parameters": [{"$ref": "#/components/parameters/UuidPath"}], "responses": {"200": {"description": "Invoice", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InvoiceDetail"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "404": {"$ref": "#/components/responses/NotFound"}}}},
             "/api/v1/webhooks/payments/{provider}": {"post": {"tags": ["Webhooks"], "summary": "Ingest a provider-verified payment webhook", "description": "Provider-specific signature validation is required. This endpoint does not use bearer sessions.", "security": [], "parameters": [{"name": "provider", "in": "path", "required": true, "schema": {"type": "string", "enum": ["crypto_pay", "anore", "telegram_stars"]}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}}, "responses": {"200": {"description": "Webhook accepted or previously processed"}, "400": {"$ref": "#/components/responses/InvalidRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}},
             "/api/v1/admin/dashboard": {"get": {"tags": ["Admin"], "summary": "Get admin operations aggregates", "responses": {"200": {"description": "Dashboard aggregates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminDashboard"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
+            "/api/v1/admin/analytics": {"get": {"tags": ["Admin"], "summary": "Get aggregated analytics for a trailing period", "description": "Daily series, period-over-period totals and breakdowns. Raw rows are never returned; aggregation happens in PostgreSQL.", "parameters": [{"$ref": "#/components/parameters/AnalyticsDays"}], "responses": {"200": {"description": "Analytics aggregates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminAnalytics"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
             "/api/v1/admin/users": {"get": {"tags": ["Admin"], "summary": "List users with pagination and search", "parameters": [{"$ref": "#/components/parameters/ListLimit"}, {"$ref": "#/components/parameters/ListOffset"}, {"$ref": "#/components/parameters/SearchQuery"}], "responses": {"200": {"description": "User page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UserPage"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
             "/api/v1/admin/subscriptions": {"get": {"tags": ["Admin"], "summary": "List subscriptions with pagination and filters", "parameters": [{"$ref": "#/components/parameters/ListLimit"}, {"$ref": "#/components/parameters/ListOffset"}, {"$ref": "#/components/parameters/SearchQuery"}, {"$ref": "#/components/parameters/StatusQuery"}], "responses": {"200": {"description": "Subscription page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubscriptionPage"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
             "/api/v1/admin/invoices": {"get": {"tags": ["Admin"], "summary": "List invoices with pagination and filters", "parameters": [{"$ref": "#/components/parameters/ListLimit"}, {"$ref": "#/components/parameters/ListOffset"}, {"$ref": "#/components/parameters/SearchQuery"}, {"$ref": "#/components/parameters/StatusQuery"}, {"$ref": "#/components/parameters/ProviderQuery"}], "responses": {"200": {"description": "Invoice page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminInvoicePage"}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}},
@@ -901,7 +946,8 @@ async fn openapi_document() -> Json<Value> {
                 "SearchQuery": {"name": "q", "in": "query", "schema": {"type": "string"}},
                 "StatusQuery": {"name": "status", "in": "query", "schema": {"type": "string"}},
                 "ProviderQuery": {"name": "provider", "in": "query", "schema": {"type": "string"}},
-                "ActionQuery": {"name": "action", "in": "query", "schema": {"type": "string"}}
+                "ActionQuery": {"name": "action", "in": "query", "schema": {"type": "string"}},
+                "AnalyticsDays": {"name": "days", "in": "query", "description": "Trailing window length in days. Unsupported values fall back to 14.", "schema": {"type": "integer", "enum": [7, 14, 30, 90], "default": 14}}
             },
             "responses": {
                 "InvalidRequest": {"description": "Request validation failed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}, "example": {"code": "invalid_request", "message": "Language must be ru or en."}}}},
@@ -944,6 +990,11 @@ async fn openapi_document() -> Json<Value> {
                 "AdminPromo": {"type": "object", "required": ["id", "code", "kind", "redeemed_count", "is_active"], "properties": {"id": {"type": "string", "format": "uuid"}, "code": {"type": "string"}, "kind": {"type": "string"}, "amount_minor": {"type": ["integer", "null"], "format": "int64"}, "discount_percent": {"type": ["integer", "null"], "format": "int16"}, "maximum_redemptions": {"type": ["integer", "null"], "format": "int32"}, "redeemed_count": {"type": "integer", "format": "int32"}, "is_active": {"type": "boolean"}, "starts_at": {"type": ["string", "null"], "format": "date-time"}, "ends_at": {"type": ["string", "null"], "format": "date-time"}}},
                 "UpsertPromoRequest": {"type": "object", "additionalProperties": false, "required": ["code", "kind", "is_active"], "properties": {"code": {"type": "string"}, "kind": {"type": "string"}, "amount_minor": {"type": ["integer", "null"], "format": "int64"}, "discount_percent": {"type": ["integer", "null"], "format": "int16"}, "maximum_redemptions": {"type": ["integer", "null"], "format": "int32"}, "is_active": {"type": "boolean"}, "starts_at": {"type": ["string", "null"], "format": "date-time"}, "ends_at": {"type": ["string", "null"], "format": "date-time"}}},
                 "AdminDashboard": {"type": "object", "required": ["registered_users", "active_subscriptions", "paid_invoices", "paid_revenue_rub_minor", "pending_invoices", "provisioning_pending_subscriptions"], "properties": {"registered_users": {"type": "integer", "format": "int64"}, "active_subscriptions": {"type": "integer", "format": "int64"}, "paid_invoices": {"type": "integer", "format": "int64"}, "paid_revenue_rub_minor": {"type": "integer", "format": "int64"}, "pending_invoices": {"type": "integer", "format": "int64"}, "provisioning_pending_subscriptions": {"type": "integer", "format": "int64"}}},
+                "DailyMetric": {"type": "object", "required": ["day", "value"], "properties": {"day": {"type": "string", "format": "date"}, "value": {"type": "integer", "format": "int64"}}},
+                "MetricDelta": {"type": "object", "required": ["current", "previous"], "properties": {"current": {"type": "integer", "format": "int64"}, "previous": {"type": "integer", "format": "int64"}, "change_percent": {"type": ["number", "null"], "description": "Relative change against the preceding window of equal length. Null when the previous window is zero."}}},
+                "BreakdownEntry": {"type": "object", "required": ["key", "value"], "properties": {"key": {"type": "string"}, "value": {"type": "integer", "format": "int64"}}},
+                "TariffPerformance": {"type": "object", "required": ["code", "subscriptions", "revenue_minor"], "properties": {"code": {"type": "string"}, "subscriptions": {"type": "integer", "format": "int64"}, "revenue_minor": {"type": "integer", "format": "int64"}}},
+                "AdminAnalytics": {"type": "object", "required": ["period_days", "registrations", "revenue_rub_minor", "paid_invoices", "new_subscriptions", "trials", "totals", "revenue_by_provider", "invoices_by_status", "subscriptions_by_status", "top_tariffs"], "properties": {"period_days": {"type": "integer", "format": "int64", "enum": [7, 14, 30, 90]}, "registrations": {"type": "array", "items": {"$ref": "#/components/schemas/DailyMetric"}}, "revenue_rub_minor": {"type": "array", "items": {"$ref": "#/components/schemas/DailyMetric"}}, "paid_invoices": {"type": "array", "items": {"$ref": "#/components/schemas/DailyMetric"}}, "new_subscriptions": {"type": "array", "items": {"$ref": "#/components/schemas/DailyMetric"}}, "trials": {"type": "array", "items": {"$ref": "#/components/schemas/DailyMetric"}}, "totals": {"type": "object", "required": ["registrations", "revenue_rub_minor", "paid_invoices", "subscriptions", "trials"], "properties": {"registrations": {"$ref": "#/components/schemas/MetricDelta"}, "revenue_rub_minor": {"$ref": "#/components/schemas/MetricDelta"}, "paid_invoices": {"$ref": "#/components/schemas/MetricDelta"}, "subscriptions": {"$ref": "#/components/schemas/MetricDelta"}, "trials": {"$ref": "#/components/schemas/MetricDelta"}}}, "revenue_by_provider": {"type": "array", "items": {"$ref": "#/components/schemas/BreakdownEntry"}}, "invoices_by_status": {"type": "array", "items": {"$ref": "#/components/schemas/BreakdownEntry"}}, "subscriptions_by_status": {"type": "array", "items": {"$ref": "#/components/schemas/BreakdownEntry"}}, "top_tariffs": {"type": "array", "items": {"$ref": "#/components/schemas/TariffPerformance"}}}},
                 "AdminUser": {"type": "object", "required": ["id", "telegram_user_id", "first_name", "language_code", "balance_minor", "currency_code", "created_at"], "properties": {"id": {"type": "string", "format": "uuid"}, "telegram_user_id": {"type": "integer", "format": "int64"}, "username": {"type": ["string", "null"]}, "first_name": {"type": "string"}, "language_code": {"type": "string"}, "balance_minor": {"type": "integer", "format": "int64"}, "currency_code": {"type": "string"}, "created_at": {"type": "string", "format": "date-time"}}},
                 "AdminSubscription": {"type": "object", "required": ["id", "telegram_user_id", "status", "is_trial", "created_at"], "properties": {"id": {"type": "string", "format": "uuid"}, "telegram_user_id": {"type": "integer", "format": "int64"}, "username": {"type": ["string", "null"]}, "tariff_code": {"type": ["string", "null"]}, "status": {"type": "string"}, "starts_at": {"type": ["string", "null"], "format": "date-time"}, "expires_at": {"type": ["string", "null"], "format": "date-time"}, "traffic_bytes": {"type": ["integer", "null"], "format": "int64"}, "is_trial": {"type": "boolean"}, "created_at": {"type": "string", "format": "date-time"}}},
                 "AdminInvoice": {"type": "object", "required": ["id", "telegram_user_id", "provider", "purpose", "status", "currency_code", "amount_minor", "created_at"], "properties": {"id": {"type": "string", "format": "uuid"}, "telegram_user_id": {"type": "integer", "format": "int64"}, "username": {"type": ["string", "null"]}, "provider": {"type": "string"}, "purpose": {"type": "string"}, "status": {"type": "string"}, "currency_code": {"type": "string"}, "amount_minor": {"type": "integer", "format": "int64"}, "created_at": {"type": "string", "format": "date-time"}, "paid_at": {"type": ["string", "null"], "format": "date-time"}}},
@@ -2191,34 +2242,235 @@ async fn admin_dashboard(
     Ok(Json(dashboard))
 }
 
+const ANALYTICS_ALLOWED_PERIODS: [i64; 4] = [7, 14, 30, 90];
+
+fn analytics_period_days(query: &AnalyticsQuery) -> i64 {
+    query
+        .days
+        .filter(|days| ANALYTICS_ALLOWED_PERIODS.contains(days))
+        .unwrap_or(14)
+}
+
+// Counters and minor-unit sums stay far below 2^53, so the f64 conversion used
+// for the display-only percentage cannot lose meaningful precision here.
+#[allow(clippy::cast_precision_loss)]
+fn metric_delta(current: i64, previous: i64) -> AdminMetricDelta {
+    let change_percent = if previous == 0 {
+        None
+    } else {
+        let ratio = (current - previous) as f64 / previous as f64 * 100.0;
+        Some((ratio * 10.0).round() / 10.0)
+    };
+    AdminMetricDelta {
+        current,
+        previous,
+        change_percent,
+    }
+}
+
+/// Daily bucket series over the trailing `days` window, inclusive of today.
+///
+/// `value_sql` must be a scalar subquery correlated to the generated `day`
+/// bucket. It is a static string from this module, never user input.
+async fn analytics_series(
+    database: &PgPool,
+    days: i64,
+    value_sql: &str,
+) -> Result<Vec<AdminDailyMetric>, ApiError> {
+    let statement = format!(
+        "SELECT day::date AS day, COALESCE(({value_sql}), 0)::BIGINT AS value
+         FROM generate_series(current_date - ($1::int - 1), current_date, interval '1 day') AS day
+         ORDER BY day"
+    );
+    sqlx::query_as::<_, AdminDailyMetric>(&statement)
+        .bind(days)
+        .fetch_all(database)
+        .await
+        .map_err(database_error)
+}
+
+/// Totals for the current window and the immediately preceding window of equal
+/// length, so the UI can render a comparable delta.
+async fn analytics_window_totals(
+    database: &PgPool,
+    days: i64,
+    table_sql: &str,
+) -> Result<AdminMetricDelta, ApiError> {
+    let statement = format!(
+        "SELECT COALESCE(SUM(CASE WHEN ts >= current_date - ($1::int - 1) THEN amount ELSE 0 END), 0)::BIGINT AS current_total,
+                COALESCE(SUM(CASE WHEN ts < current_date - ($1::int - 1) THEN amount ELSE 0 END), 0)::BIGINT AS previous_total
+         FROM ({table_sql}) AS source
+         WHERE ts >= current_date - ($1::int * 2 - 1)"
+    );
+    let (current, previous) = sqlx::query_as::<_, (i64, i64)>(&statement)
+        .bind(days)
+        .fetch_one(database)
+        .await
+        .map_err(database_error)?;
+    Ok(metric_delta(current, previous))
+}
+
+async fn analytics_totals(database: &PgPool, days: i64) -> Result<AdminAnalyticsTotals, ApiError> {
+    Ok(AdminAnalyticsTotals {
+        registrations: analytics_window_totals(
+            database,
+            days,
+            "SELECT created_at AS ts, 1 AS amount FROM users WHERE deleted_at IS NULL",
+        )
+        .await?,
+        revenue_rub_minor: analytics_window_totals(
+            database,
+            days,
+            "SELECT paid_at AS ts, amount_minor AS amount FROM invoices
+             WHERE status = 'paid' AND currency_code = 'RUB' AND paid_at IS NOT NULL",
+        )
+        .await?,
+        paid_invoices: analytics_window_totals(
+            database,
+            days,
+            "SELECT paid_at AS ts, 1 AS amount FROM invoices
+             WHERE status = 'paid' AND paid_at IS NOT NULL",
+        )
+        .await?,
+        subscriptions: analytics_window_totals(
+            database,
+            days,
+            "SELECT created_at AS ts, 1 AS amount FROM subscriptions WHERE is_trial = false",
+        )
+        .await?,
+        trials: analytics_window_totals(
+            database,
+            days,
+            "SELECT created_at AS ts, 1 AS amount FROM subscriptions WHERE is_trial",
+        )
+        .await?,
+    })
+}
+
+struct AnalyticsBreakdowns {
+    revenue_by_provider: Vec<AdminBreakdownEntry>,
+    invoices_by_status: Vec<AdminBreakdownEntry>,
+    subscriptions_by_status: Vec<AdminBreakdownEntry>,
+    top_tariffs: Vec<AdminTariffPerformance>,
+}
+
+async fn analytics_breakdowns(
+    database: &PgPool,
+    days: i64,
+) -> Result<AnalyticsBreakdowns, ApiError> {
+    let revenue_by_provider = sqlx::query_as::<_, AdminBreakdownEntry>(
+        "SELECT provider AS key, COALESCE(SUM(amount_minor), 0)::BIGINT AS value
+         FROM invoices
+         WHERE status = 'paid' AND currency_code = 'RUB'
+           AND paid_at >= current_date - ($1::int - 1)
+         GROUP BY provider ORDER BY value DESC",
+    )
+    .bind(days)
+    .fetch_all(database)
+    .await
+    .map_err(database_error)?;
+    let invoices_by_status = sqlx::query_as::<_, AdminBreakdownEntry>(
+        "SELECT status AS key, COUNT(*)::BIGINT AS value
+         FROM invoices WHERE created_at >= current_date - ($1::int - 1)
+         GROUP BY status ORDER BY value DESC",
+    )
+    .bind(days)
+    .fetch_all(database)
+    .await
+    .map_err(database_error)?;
+    let subscriptions_by_status = sqlx::query_as::<_, AdminBreakdownEntry>(
+        "SELECT status AS key, COUNT(*)::BIGINT AS value
+         FROM subscriptions GROUP BY status ORDER BY value DESC",
+    )
+    .fetch_all(database)
+    .await
+    .map_err(database_error)?;
+    let top_tariffs = sqlx::query_as::<_, AdminTariffPerformance>(
+        "SELECT t.code AS code,
+                COUNT(s.id)::BIGINT AS subscriptions,
+                COALESCE(SUM(CASE WHEN i.status = 'paid' AND i.currency_code = 'RUB'
+                                  THEN i.amount_minor ELSE 0 END), 0)::BIGINT AS revenue_minor
+         FROM tariffs t
+         LEFT JOIN subscriptions s ON s.tariff_id = t.id
+              AND s.created_at >= current_date - ($1::int - 1)
+         LEFT JOIN invoices i ON i.id = s.source_invoice_id
+         GROUP BY t.code
+         ORDER BY revenue_minor DESC, subscriptions DESC, t.code
+         LIMIT 6",
+    )
+    .bind(days)
+    .fetch_all(database)
+    .await
+    .map_err(database_error)?;
+    Ok(AnalyticsBreakdowns {
+        revenue_by_provider,
+        invoices_by_status,
+        subscriptions_by_status,
+        top_tariffs,
+    })
+}
+
 async fn admin_analytics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<AnalyticsQuery>,
 ) -> Result<Json<AdminAnalyticsResponse>, ApiError> {
     authenticated_admin_id(&state, &headers).await?;
-    let registrations = sqlx::query_as::<_, AdminDailyMetric>(
-        "SELECT day::date AS day,
-                COALESCE((SELECT COUNT(*) FROM users u WHERE u.created_at >= day AND u.created_at < day + interval '1 day'), 0)::BIGINT AS value
-         FROM generate_series(current_date - 13, current_date, interval '1 day') AS day
-         ORDER BY day",
+    let days = analytics_period_days(&query);
+    let database = &state.database;
+
+    let registrations = analytics_series(
+        database,
+        days,
+        "SELECT COUNT(*) FROM users u
+         WHERE u.deleted_at IS NULL AND u.created_at >= day AND u.created_at < day + interval '1 day'",
     )
-    .fetch_all(&state.database)
-    .await
-    .map_err(database_error)?;
-    let revenue_rub_minor = sqlx::query_as::<_, AdminDailyMetric>(
-        "SELECT day::date AS day,
-                COALESCE((SELECT SUM(i.amount_minor) FROM invoices i
-                  WHERE i.status = 'paid' AND i.currency_code = 'RUB'
-                    AND i.paid_at >= day AND i.paid_at < day + interval '1 day'), 0)::BIGINT AS value
-         FROM generate_series(current_date - 13, current_date, interval '1 day') AS day
-         ORDER BY day",
+    .await?;
+    let revenue_rub_minor = analytics_series(
+        database,
+        days,
+        "SELECT SUM(i.amount_minor) FROM invoices i
+         WHERE i.status = 'paid' AND i.currency_code = 'RUB'
+           AND i.paid_at >= day AND i.paid_at < day + interval '1 day'",
     )
-    .fetch_all(&state.database)
-    .await
-    .map_err(database_error)?;
+    .await?;
+    let paid_invoices = analytics_series(
+        database,
+        days,
+        "SELECT COUNT(*) FROM invoices i
+         WHERE i.status = 'paid' AND i.paid_at >= day AND i.paid_at < day + interval '1 day'",
+    )
+    .await?;
+    let new_subscriptions = analytics_series(
+        database,
+        days,
+        "SELECT COUNT(*) FROM subscriptions s
+         WHERE s.is_trial = false AND s.created_at >= day AND s.created_at < day + interval '1 day'",
+    )
+    .await?;
+    let trials = analytics_series(
+        database,
+        days,
+        "SELECT COUNT(*) FROM subscriptions s
+         WHERE s.is_trial AND s.created_at >= day AND s.created_at < day + interval '1 day'",
+    )
+    .await?;
+
+    let totals = analytics_totals(database, days).await?;
+    let breakdowns = analytics_breakdowns(database, days).await?;
+
     Ok(Json(AdminAnalyticsResponse {
+        period_days: days,
         registrations,
         revenue_rub_minor,
+        paid_invoices,
+        new_subscriptions,
+        trials,
+        totals,
+        revenue_by_provider: breakdowns.revenue_by_provider,
+        invoices_by_status: breakdowns.invoices_by_status,
+        subscriptions_by_status: breakdowns.subscriptions_by_status,
+        top_tariffs: breakdowns.top_tariffs,
     }))
 }
 
@@ -4667,9 +4919,11 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnoreConfig, AnoreProvider, AppState, HmacSha256, INIT_DATA_MAX_AGE_SECONDS,
-        PaymentProvider, RateLimitKind, extract_subscription_nodes, openapi_document,
-        payment_webhook, rate_limit_kind, reject_telegram_replay, render_clash_subscription,
+        ANALYTICS_ALLOWED_PERIODS, AnalyticsQuery, AnoreConfig, AnoreProvider, AppState,
+        HmacSha256, INIT_DATA_MAX_AGE_SECONDS, PaymentProvider, RateLimitKind,
+        analytics_breakdowns, analytics_period_days, analytics_series, analytics_totals,
+        extract_subscription_nodes, metric_delta, openapi_document, payment_webhook,
+        rate_limit_kind, reject_telegram_replay, render_clash_subscription,
         render_singbox_subscription, render_subscription_for_client, render_xray_subscription,
         sha256_bytes, verify_telegram_init_data,
     };
@@ -4759,6 +5013,42 @@ mod tests {
         assert!(rate_limit_kind(&Method::OPTIONS, "/api/v1/purchases").is_none());
     }
 
+    #[test]
+    fn analytics_period_falls_back_to_supported_window() {
+        assert_eq!(analytics_period_days(&AnalyticsQuery { days: None }), 14);
+        assert_eq!(
+            analytics_period_days(&AnalyticsQuery { days: Some(30) }),
+            30
+        );
+        assert_eq!(
+            analytics_period_days(&AnalyticsQuery { days: Some(90) }),
+            90
+        );
+        assert_eq!(analytics_period_days(&AnalyticsQuery { days: Some(0) }), 14);
+        assert_eq!(
+            analytics_period_days(&AnalyticsQuery { days: Some(-30) }),
+            14
+        );
+        assert_eq!(
+            analytics_period_days(&AnalyticsQuery {
+                days: Some(100_000)
+            }),
+            14
+        );
+    }
+
+    #[test]
+    fn metric_delta_reports_relative_change() {
+        let growth = metric_delta(150, 100);
+        assert_eq!(growth.current, 150);
+        assert_eq!(growth.previous, 100);
+        assert_eq!(growth.change_percent, Some(50.0));
+        assert_eq!(metric_delta(75, 100).change_percent, Some(-25.0));
+        assert_eq!(metric_delta(1, 3).change_percent, Some(-66.7));
+        assert_eq!(metric_delta(5, 0).change_percent, None);
+        assert_eq!(metric_delta(0, 0).change_percent, None);
+    }
+
     #[tokio::test]
     async fn openapi_contract_covers_p0_routes() {
         let document = openapi_document().await.0;
@@ -4772,6 +5062,7 @@ mod tests {
             ("/api/v1/invoices", "post"),
             ("/api/v1/webhooks/payments/{provider}", "post"),
             ("/api/v1/admin/users", "get"),
+            ("/api/v1/admin/analytics", "get"),
             ("/api/v1/admin/tariffs", "post"),
             ("/api/v1/admin/required-channels/{id}", "put"),
         ] {
@@ -4782,7 +5073,17 @@ mod tests {
                 "missing responses for {method} {path}"
             );
         }
-        assert_eq!(document["paths"].as_object().unwrap().len(), 28);
+        assert_eq!(document["paths"].as_object().unwrap().len(), 29);
+        assert_eq!(
+            document["components"]["schemas"]["AdminAnalytics"]["properties"]["totals"]["required"],
+            serde_json::json!([
+                "registrations",
+                "revenue_rub_minor",
+                "paid_invoices",
+                "subscriptions",
+                "trials"
+            ])
+        );
         assert_eq!(
             document["paths"]["/api/v1/auth/telegram"]["post"]["security"],
             serde_json::json!([])
@@ -4809,6 +5110,98 @@ mod tests {
                 .get("Unauthorized")
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn analytics_aggregates_run_against_postgres() {
+        let Some(pool) = postgres_test_pool().await else {
+            return;
+        };
+        let user_id = Uuid::now_v7();
+        let tariff_id = Uuid::now_v7();
+        let tariff_code = format!("analytics-{tariff_id}");
+        let invoice_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, telegram_user_id) VALUES ($1, $2)")
+            .bind(user_id)
+            .bind(test_telegram_user_id())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tariffs (id, code, name) VALUES ($1, $2, '{\"en\":\"Test\"}')")
+            .bind(tariff_id)
+            .bind(&tariff_code)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO invoices
+             (id, user_id, provider, provider_invoice_id, purpose, status, currency_code,
+              amount_minor, tariff_id, expires_at, paid_at)
+             VALUES ($1, $2, 'anore', $3, 'direct_purchase', 'paid', 'RUB', 70000, $4,
+                     now() + interval '1 hour', now())",
+        )
+        .bind(invoice_id)
+        .bind(user_id)
+        .bind(format!("analytics-{invoice_id}"))
+        .bind(tariff_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO subscriptions (id, user_id, tariff_id, source_invoice_id, status,
+                                        starts_at, expires_at, is_trial)
+             VALUES ($1, $2, $3, $4, 'active', now(), now() + interval '30 days', false)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(user_id)
+        .bind(tariff_id)
+        .bind(invoice_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for days in ANALYTICS_ALLOWED_PERIODS {
+            let revenue = analytics_series(
+                &pool,
+                days,
+                "SELECT SUM(i.amount_minor) FROM invoices i
+                 WHERE i.status = 'paid' AND i.currency_code = 'RUB'
+                   AND i.paid_at >= day AND i.paid_at < day + interval '1 day'",
+            )
+            .await
+            .unwrap();
+            assert_eq!(revenue.len(), usize::try_from(days).unwrap());
+            let today = revenue.last().unwrap();
+            assert!(
+                today.value >= 70000,
+                "today's revenue bucket must include the seeded invoice"
+            );
+
+            let totals = analytics_totals(&pool, days).await.unwrap();
+            assert!(totals.revenue_rub_minor.current >= 70000);
+            assert!(totals.subscriptions.current >= 1);
+
+            let breakdowns = analytics_breakdowns(&pool, days).await.unwrap();
+            assert!(
+                breakdowns
+                    .revenue_by_provider
+                    .iter()
+                    .any(|entry| entry.key == "anore" && entry.value >= 70000)
+            );
+            assert!(
+                breakdowns
+                    .invoices_by_status
+                    .iter()
+                    .any(|entry| entry.key == "paid")
+            );
+            assert!(
+                breakdowns
+                    .subscriptions_by_status
+                    .iter()
+                    .any(|entry| entry.key == "active")
+            );
+            assert!(breakdowns.top_tariffs.len() <= 6);
+        }
     }
 
     #[tokio::test]

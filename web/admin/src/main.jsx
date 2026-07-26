@@ -25,6 +25,16 @@ const initialChannel = { telegram_chat_id: "", title: "", public_url: "", is_act
 const presets = ["matrix", "cyan", "violet", "amber", "red", "frost"];
 const densities = ["compact", "comfortable", "spacious"];
 
+function State({ title, detail, action }) {
+  return (
+    <div className="state">
+      <h1>{title}</h1>
+      {detail && <p>{detail}</p>}
+      {action && <button onClick={action}>Повторить</button>}
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(null);
   const [data, setData] = useState(null);

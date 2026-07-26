@@ -1913,7 +1913,7 @@ async fn admin_dashboard(
              (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) AS registered_users,
              (SELECT COUNT(*) FROM subscriptions WHERE status = 'active') AS active_subscriptions,
              (SELECT COUNT(*) FROM invoices WHERE status = 'paid') AS paid_invoices,
-             (SELECT COALESCE(SUM(amount_minor), 0) FROM invoices
+             (SELECT COALESCE(SUM(amount_minor), 0)::BIGINT FROM invoices
                WHERE status = 'paid' AND currency_code = 'RUB') AS paid_revenue_rub_minor,
              (SELECT COUNT(*) FROM invoices WHERE status = 'pending') AS pending_invoices,
              (SELECT COUNT(*) FROM subscriptions WHERE status = 'provisioning_pending')

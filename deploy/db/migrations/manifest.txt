@@ -1,1 +1,2 @@
 002_admin_accounts.sql
+003_required_channels.sql

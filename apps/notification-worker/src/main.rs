@@ -18,16 +18,29 @@ struct PendingNotification {
     payload: Value,
 }
 
+async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
+        .bind(key)
+        .fetch_optional(database)
+        .await?
+        .filter(|value| !value.is_empty())
+        .context(format!("secret {key} not found in app_secrets"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
-    let telegram_bot_token =
-        env::var("TELEGRAM_BOT_TOKEN").context("TELEGRAM_BOT_TOKEN is required")?;
     let pool = connect(&database_url)
         .await
         .context("database connection failed")?;
+    let telegram_bot_token = match env::var("TELEGRAM_BOT_TOKEN") {
+        Ok(value) if !value.is_empty() => value,
+        _ => load_secret_from_db(&pool, "TELEGRAM_BOT_TOKEN")
+            .await
+            .context("TELEGRAM_BOT_TOKEN is required (set in env or app_secrets)")?,
+    };
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()

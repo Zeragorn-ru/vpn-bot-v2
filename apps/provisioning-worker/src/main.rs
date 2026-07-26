@@ -27,16 +27,40 @@ struct PendingSubscription {
     current_expiry: Option<DateTime<Utc>>,
 }
 
+async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
+        .bind(key)
+        .fetch_optional(database)
+        .await?
+        .filter(|value| !value.is_empty())
+        .context(format!("secret {key} not found in app_secrets"))
+}
+
+fn env_or_fallback(env_key: &str, db_value: Option<String>, fallback: Option<String>) -> Result<String> {
+    if let Ok(value) = env::var(env_key) {
+        if !value.is_empty() {
+            return Ok(value);
+        }
+    }
+    if let Some(value) = db_value.filter(|v| !v.is_empty()) {
+        return Ok(value);
+    }
+    if let Some(value) = fallback.filter(|v| !v.is_empty()) {
+        return Ok(value);
+    }
+    Err(anyhow::anyhow!("{env_key} is required (set in env or app_secrets)"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     let encryption_key = load_encryption_key()?;
-    let provider = RemnawaveProvider::new(load_remnawave_config()?)?;
     let pool = connect(&database_url)
         .await
         .context("database connection failed")?;
+    let provider = RemnawaveProvider::new(load_remnawave_config(&pool).await?)?;
 
     info!("provisioning worker started");
     let mut ticker = interval(Duration::from_secs(5));
@@ -413,23 +437,36 @@ async fn complete_provisioning(
     Ok(())
 }
 
-fn load_remnawave_config() -> Result<RemnawaveConfig> {
+async fn load_remnawave_config(database: &PgPool) -> Result<RemnawaveConfig> {
+    let base_url = env_or_fallback("REMNAWAVE_BASE_URL",
+        load_secret_from_db(database, "REMNAWAVE_BASE_URL").await.ok(), None)?;
+    let api_token = env_or_fallback("REMNAWAVE_API_TOKEN",
+        load_secret_from_db(database, "REMNAWAVE_API_TOKEN").await.ok(), None)?;
+    let internal_squad_uuids = env_or_fallback("REMNAWAVE_INTERNAL_SQUAD_UUIDS",
+        load_secret_from_db(database, "REMNAWAVE_INTERNAL_SQUAD_UUIDS").await.ok(), Some(String::new()))?;
+    let external_squad_uuid = env_or_fallback("REMNAWAVE_EXTERNAL_SQUAD_UUID",
+        load_secret_from_db(database, "REMNAWAVE_EXTERNAL_SQUAD_UUID").await.ok(), None).ok();
+    let traffic_limit_strategy = env_or_fallback("REMNAWAVE_TRAFFIC_LIMIT_STRATEGY",
+        load_secret_from_db(database, "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY").await.ok(),
+        Some("NO_RESET".to_owned()))?;
+    let user_tag = env_or_fallback("REMNAWAVE_USER_TAG",
+        load_secret_from_db(database, "REMNAWAVE_USER_TAG").await.ok(),
+        Some("PAID".to_owned()))?;
+    let username_prefix = env_or_fallback("REMNAWAVE_USERNAME_PREFIX",
+        load_secret_from_db(database, "REMNAWAVE_USERNAME_PREFIX").await.ok(),
+        Some("vpn".to_owned()))?;
     Ok(RemnawaveConfig {
-        base_url: env::var("REMNAWAVE_BASE_URL").context("REMNAWAVE_BASE_URL is required")?,
-        api_token: env::var("REMNAWAVE_API_TOKEN").context("REMNAWAVE_API_TOKEN is required")?,
-        internal_squad_uuids: env::var("REMNAWAVE_INTERNAL_SQUAD_UUIDS")
-            .unwrap_or_default()
+        base_url,
+        api_token,
+        internal_squad_uuids: internal_squad_uuids
             .split(',')
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .collect(),
-        external_squad_uuid: env::var("REMNAWAVE_EXTERNAL_SQUAD_UUID")
-            .ok()
-            .filter(|value| !value.is_empty()),
-        traffic_limit_strategy: env::var("REMNAWAVE_TRAFFIC_LIMIT_STRATEGY")
-            .unwrap_or_else(|_| "NO_RESET".to_owned()),
-        user_tag: env::var("REMNAWAVE_USER_TAG").unwrap_or_else(|_| "PAID".to_owned()),
-        username_prefix: env::var("REMNAWAVE_USERNAME_PREFIX").unwrap_or_else(|_| "vpn".to_owned()),
+        external_squad_uuid: external_squad_uuid.filter(|value| !value.is_empty()),
+        traffic_limit_strategy,
+        user_tag,
+        username_prefix,
     })
 }
 

@@ -30,7 +30,7 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use redis::AsyncCommands;
@@ -426,6 +426,26 @@ struct AdminUserResponse {
     created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateAdminUserRequest {
+    telegram_user_id: i64,
+    username: Option<String>,
+    first_name: String,
+    language_code: String,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct AdminDailyMetric {
+    day: NaiveDate,
+    value: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminAnalyticsResponse {
+    registrations: Vec<AdminDailyMetric>,
+    revenue_rub_minor: Vec<AdminDailyMetric>,
+}
+
 #[derive(Debug, FromRow, Serialize)]
 struct AdminSubscriptionResponse {
     id: Uuid,
@@ -642,8 +662,9 @@ async fn main() -> Result<()> {
             "/api/v1/admin/required-channels/{id}",
             put(update_admin_required_channel),
         )
-        .route("/api/v1/admin/users", get(admin_users))
+        .route("/api/v1/admin/users", get(admin_users).post(create_admin_user))
         .route("/api/v1/admin/dashboard", get(admin_dashboard))
+        .route("/api/v1/admin/analytics", get(admin_analytics))
         .route("/api/v1/admin/audit", get(admin_audit))
         .route("/api/v1/admin/subscriptions", get(admin_subscriptions))
         .route("/api/v1/admin/invoices", get(admin_invoices))
@@ -1903,6 +1924,90 @@ async fn admin_users(
     }))
 }
 
+async fn create_admin_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CreateAdminUserRequest>,
+) -> Result<(StatusCode, Json<AdminUserResponse>), ApiError> {
+    if request.telegram_user_id <= 0
+        || request.first_name.trim().is_empty()
+        || request.first_name.chars().count() > 128
+        || !matches!(request.language_code.as_str(), "ru" | "en")
+        || request.username.as_ref().is_some_and(|username| {
+            username.is_empty()
+                || username.len() > 64
+                || !username
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        })
+    {
+        return Err(ApiError::invalid("Client details are invalid."));
+    }
+    let actor_user_id = authenticated_admin_id(&state, &headers).await?;
+    let user_id = Uuid::now_v7();
+    let username = request
+        .username
+        .as_deref()
+        .map(|value| value.trim_start_matches('@').to_owned())
+        .filter(|value| !value.is_empty());
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    let existing = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE telegram_user_id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(request.telegram_user_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if existing {
+        return Err(ApiError::conflict("A client with this Telegram ID already exists."));
+    }
+    sqlx::query("INSERT INTO users (id, telegram_user_id) VALUES ($1, $2)")
+        .bind(user_id)
+        .bind(request.telegram_user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO user_profiles (user_id, username, first_name, language_code)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(request.first_name.trim())
+    .bind(&request.language_code)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query("INSERT INTO wallets (id, user_id, currency_code) VALUES ($1, $2, 'RUB')")
+        .bind(Uuid::now_v7())
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    let response = AdminUserResponse {
+        id: user_id,
+        telegram_user_id: request.telegram_user_id,
+        username,
+        first_name: request.first_name.trim().to_owned(),
+        language_code: request.language_code,
+        balance_minor: 0,
+        currency_code: "RUB".to_owned(),
+        created_at: Utc::now(),
+    };
+    insert_audit_record(
+        &mut transaction,
+        actor_user_id,
+        "client.created",
+        "client",
+        user_id,
+        None,
+        serde_json::to_value(&response).expect("client response is serializable"),
+    )
+    .await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
 async fn admin_dashboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1923,6 +2028,37 @@ async fn admin_dashboard(
     .await
     .map_err(database_error)?;
     Ok(Json(dashboard))
+}
+
+async fn admin_analytics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminAnalyticsResponse>, ApiError> {
+    authenticated_admin_id(&state, &headers).await?;
+    let registrations = sqlx::query_as::<_, AdminDailyMetric>(
+        "SELECT day::date AS day,
+                COALESCE((SELECT COUNT(*) FROM users u WHERE u.created_at >= day AND u.created_at < day + interval '1 day'), 0)::BIGINT AS value
+         FROM generate_series(current_date - 13, current_date, interval '1 day') AS day
+         ORDER BY day",
+    )
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    let revenue_rub_minor = sqlx::query_as::<_, AdminDailyMetric>(
+        "SELECT day::date AS day,
+                COALESCE((SELECT SUM(i.amount_minor) FROM invoices i
+                  WHERE i.status = 'paid' AND i.currency_code = 'RUB'
+                    AND i.paid_at >= day AND i.paid_at < day + interval '1 day'), 0)::BIGINT AS value
+         FROM generate_series(current_date - 13, current_date, interval '1 day') AS day
+         ORDER BY day",
+    )
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(Json(AdminAnalyticsResponse {
+        registrations,
+        revenue_rub_minor,
+    }))
 }
 
 async fn admin_audit(

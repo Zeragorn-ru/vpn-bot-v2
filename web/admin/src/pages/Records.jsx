@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "../lib/api.jsx";
-import { count, date, dateTime, label, money, statusTone, timeAgo, userLabel } from "../lib/format.js";
+import { bytes, count, date, dateTime, duration, label, money, statusTone, timeAgo, userLabel } from "../lib/format.js";
 import {
   Badge,
   Card,
@@ -45,6 +45,7 @@ export function UsersPage({ notify }) {
   const list = useListPage("/admin/users");
   const { run, pending } = useMutation();
   const [open, setOpen] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState(null);
   const [form, setForm] = useState({ telegram_user_id: "", username: "", first_name: "", language_code: "ru" });
 
   const submit = async (event) => {
@@ -115,6 +116,7 @@ export function UsersPage({ notify }) {
             ]}
             rows={list.data?.items || []}
             keyOf={(row) => row.id}
+            onRowClick={(row) => setSelectedUserId(row.id)}
             page={list.data}
             onPageChange={list.setOffset}
             loading={list.loading}
@@ -163,6 +165,149 @@ export function UsersPage({ notify }) {
             </Field>
           </form>
         </Modal>
+      )}
+      {selectedUserId && (
+        <UserDetailPage userId={selectedUserId} onBack={() => setSelectedUserId(null)} notify={notify} />
+      )}
+    </>
+  );
+}
+
+function UserDetailPage({ userId, onBack, notify }) {
+  const { run, pending } = useMutation();
+  const { data, error, loading, reload } = useQuery(`/admin/users/${userId}`);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({});
+
+  useEffect(() => {
+    if (data) {
+      setForm({
+        first_name: data.first_name || "",
+        username: data.username || "",
+        language_code: data.language_code || "ru",
+        balance_adjustment: "",
+      });
+    }
+  }, [data]);
+
+  const saveUser = async (event) => {
+    event.preventDefault();
+    try {
+      const body = {
+        first_name: form.first_name,
+        username: form.username || null,
+        language_code: form.language_code,
+      };
+      if (form.balance_adjustment && form.balance_adjustment !== "0") {
+        body.balance_adjustment = Number(form.balance_adjustment);
+      }
+      await run(`/admin/users/${userId}`, { method: "PUT", body });
+      notify({ message: "Клиент обновлён." });
+      setEditing(false);
+      setForm({ ...form, balance_adjustment: "" });
+      reload();
+    } catch (err) {
+      notify({ message: err.message, tone: "error" });
+    }
+  };
+
+  const deleteUser = async () => {
+    if (!confirm("Удалить клиента? Это действие необратимо.")) return;
+    try {
+      await run(`/admin/users/${userId}`, { method: "DELETE" });
+      notify({ message: "Клиент удалён." });
+      onBack();
+    } catch (err) {
+      notify({ message: err.message, tone: "error" });
+    }
+  };
+
+  if (loading) return <Card title="Загрузка..." />;
+  if (error) return <Card title="Ошибка"><ErrorState detail={error} onRetry={reload} /></Card>;
+  if (!data) return null;
+
+  return (
+    <>
+      <PageHeader
+        kicker={`Клиент / ${userLabel(data)}`}
+        title={userLabel(data)}
+        description={`Telegram ID: ${data.telegram_user_id}`}
+        actions={
+          <>
+            <button type="button" className="btn ghost" onClick={onBack}>← Назад</button>
+            <button type="button" className="btn primary" onClick={() => setEditing(!editing)}>
+              {editing ? "Отмена" : "Редактировать"}
+            </button>
+            <button type="button" className="btn danger" onClick={deleteUser}>Удалить</button>
+          </>
+        }
+      />
+      {editing ? (
+        <Card title="Редактирование клиента">
+          <form className="form-grid" onSubmit={saveUser}>
+            <Field label="Имя">
+              <input required value={form.first_name} onChange={(event) => setForm({ ...form, first_name: event.target.value })} />
+            </Field>
+            <Field label="Username" hint="Без @">
+              <input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
+            </Field>
+            <Field label="Язык">
+              <select value={form.language_code} onChange={(event) => setForm({ ...form, language_code: event.target.value })}>
+                <option value="ru">Русский</option>
+                <option value="en">English</option>
+              </select>
+            </Field>
+            <Field label="Корректировка баланса (копейки)" hint="Положительное — начислить, отрицательное — списать">
+              <input inputMode="numeric" placeholder="0" value={form.balance_adjustment} onChange={(event) => setForm({ ...form, balance_adjustment: event.target.value })} />
+            </Field>
+            <button type="submit" className="btn primary" disabled={pending}>{pending ? "Сохранение..." : "Сохранить"}</button>
+          </form>
+        </Card>
+      ) : (
+        <div className="grid two">
+          <Card title="Профиль">
+            <div className="detail-grid">
+              <div><span>Баланс</span><b>{money(data.balance_minor, data.currency_code)}</b></div>
+              <div><span>Язык</span><Badge>{data.language_code}</Badge></div>
+              <div><span>Регистрация</span><span>{dateTime(data.created_at)}</span></div>
+            </div>
+          </Card>
+          <Card title={`Подписки (${data.subscriptions?.length || 0})`}>
+            {(!data.subscriptions || data.subscriptions.length === 0) ? (
+              <p className="muted">Нет подписок</p>
+            ) : (
+              <div className="detail-list">
+                {data.subscriptions.map((sub) => (
+                  <div className="detail-row" key={sub.id}>
+                    <div>
+                      <Badge tone={statusTone(sub.status)}>{label(sub.status)}</Badge>
+                      {sub.is_trial && <Badge>пробная</Badge>}
+                    </div>
+                    <span>{sub.tariff_code || "—"}</span>
+                    <small>{sub.expires_at ? `до ${date(sub.expires_at)}` : ""}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+          <Card title={`Платежи (${data.recent_invoices?.length || 0})`} className="span-full">
+            {(!data.recent_invoices || data.recent_invoices.length === 0) ? (
+              <p className="muted">Нет платежей</p>
+            ) : (
+              <DataTable
+                columns={[
+                  { key: "status", title: "Статус", render: (row) => <Badge tone={statusTone(row.status)}>{label(row.status)}</Badge>, width: "120px" },
+                  { key: "provider", title: "Провайдер", render: (row) => label(row.provider) },
+                  { key: "purpose", title: "Назначение", render: (row) => label(row.purpose) },
+                  { key: "amount", title: "Сумма", align: "right", render: (row) => <b className="num">{money(row.amount_minor, row.currency_code)}</b> },
+                  { key: "created", title: "Дата", align: "right", render: (row) => dateTime(row.paid_at || row.created_at), width: "160px" },
+                ]}
+                rows={data.recent_invoices}
+                keyOf={(row) => row.id}
+              />
+            )}
+          </Card>
+        </div>
       )}
     </>
   );

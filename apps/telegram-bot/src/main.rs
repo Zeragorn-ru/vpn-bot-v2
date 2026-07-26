@@ -1085,7 +1085,7 @@ async fn show_access(
         token,
         chat_id,
         &text,
-        Some(open_app_keyboard(&bot_user.language_code, mini_app_url)),
+        Some(open_app_keyboard_with_screen(&bot_user.language_code, mini_app_url, "access")),
     )
     .await
 }
@@ -1244,7 +1244,16 @@ async fn answer_callback(
 }
 
 fn open_app_keyboard(language: &str, mini_app_url: &str) -> Value {
-    json!({"inline_keyboard":[[json!({"text":if language == "en" {"Open Mini App"} else {"Открыть Mini App"},"web_app":{"url":mini_app_url}})],[json!({"text":if language == "en" {"Back"} else {"Назад"},"callback_data":"menu:home"})]]})
+    open_app_keyboard_with_screen(language, mini_app_url, "")
+}
+
+fn open_app_keyboard_with_screen(language: &str, mini_app_url: &str, screen: &str) -> Value {
+    let url = if screen.is_empty() {
+        mini_app_url.to_owned()
+    } else {
+        format!("{mini_app_url}?screen={screen}")
+    };
+    json!({"inline_keyboard":[[json!({"text":if language == "en" {"Open Mini App"} else {"Открыть Mini App"},"web_app":{"url":url}})],[json!({"text":if language == "en" {"Back"} else {"Назад"},"callback_data":"menu:home"})]]})
 }
 
 async fn send_message(

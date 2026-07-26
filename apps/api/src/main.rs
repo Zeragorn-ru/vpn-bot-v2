@@ -301,7 +301,11 @@ struct CurrentSubscriptionResponse {
     starts_at: Option<DateTime<Utc>>,
     expires_at: Option<DateTime<Utc>>,
     traffic_bytes: Option<i64>,
+    traffic_used_bytes: Option<i64>,
     access_available: bool,
+    is_trial: bool,
+    tariff_code: Option<String>,
+    tariff_name: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -451,6 +455,52 @@ struct CreateAdminUserRequest {
     username: Option<String>,
     first_name: String,
     language_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateAdminUserRequest {
+    username: Option<String>,
+    first_name: Option<String>,
+    language_code: Option<String>,
+    balance_adjustment: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminUserDetailResponse {
+    id: Uuid,
+    telegram_user_id: i64,
+    username: Option<String>,
+    first_name: String,
+    language_code: String,
+    balance_minor: i64,
+    currency_code: String,
+    created_at: DateTime<Utc>,
+    subscriptions: Vec<AdminUserSubscriptionItem>,
+    recent_invoices: Vec<AdminUserInvoiceItem>,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct AdminUserSubscriptionItem {
+    id: Uuid,
+    status: String,
+    tariff_code: Option<String>,
+    is_trial: bool,
+    traffic_bytes: Option<i64>,
+    traffic_used_bytes: Option<i64>,
+    created_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+struct AdminUserInvoiceItem {
+    id: Uuid,
+    provider: String,
+    purpose: String,
+    status: String,
+    currency_code: String,
+    amount_minor: i64,
+    created_at: DateTime<Utc>,
+    paid_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, FromRow, Serialize)]
@@ -753,6 +803,12 @@ async fn main() -> Result<()> {
         .route(
             "/api/v1/admin/users",
             get(admin_users).post(create_admin_user),
+        )
+        .route(
+            "/api/v1/admin/users/{id}",
+            get(admin_user_detail)
+                .put(update_admin_user)
+                .delete(delete_admin_user),
         )
         .route("/api/v1/admin/dashboard", get(admin_dashboard))
         .route("/api/v1/admin/analytics", get(admin_analytics))
@@ -1326,9 +1382,12 @@ async fn current_subscription(
     let user_id = authenticated_user_id(&state.database, &headers).await?;
     let subscription = sqlx::query_as::<_, CurrentSubscriptionResponse>(
         "SELECT s.id, s.status, s.starts_at, s.expires_at, s.traffic_bytes,
-                (a.encrypted_access_url IS NOT NULL) AS access_available
+                s.traffic_used_bytes,
+                (a.encrypted_access_url IS NOT NULL) AS access_available,
+                s.is_trial, t.code AS tariff_code, t.name AS tariff_name
          FROM subscriptions s
          LEFT JOIN vpn_accounts a ON a.id = s.vpn_account_id
+         LEFT JOIN tariffs t ON t.id = s.tariff_id
          WHERE s.user_id = $1
          ORDER BY CASE s.status WHEN 'active' THEN 0 WHEN 'provisioning_pending' THEN 1 ELSE 2 END,
                   s.created_at DESC
@@ -2244,6 +2303,200 @@ async fn create_admin_user(
     .await?;
     transaction.commit().await.map_err(database_error)?;
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+async fn admin_user_detail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AdminUserDetailResponse>, ApiError> {
+    authenticated_admin_id(&state, &headers).await?;
+    let user = sqlx::query_as::<_, AdminUserResponse>(
+        "SELECT u.id, u.telegram_user_id, p.username, p.first_name, p.language_code,
+                w.balance_minor, w.currency_code, u.created_at
+          FROM users u
+          JOIN user_profiles p ON p.user_id = u.id
+          JOIN wallets w ON w.user_id = u.id
+          WHERE u.id = $1 AND u.deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "User not found."))?;
+    let subscriptions = sqlx::query_as::<_, AdminUserSubscriptionItem>(
+        "SELECT s.id, s.status, t.code AS tariff_code, s.is_trial,
+                s.traffic_bytes, s.traffic_used_bytes, s.created_at, s.expires_at
+          FROM subscriptions s
+          LEFT JOIN tariffs t ON t.id = s.tariff_id
+          WHERE s.user_id = $1
+          ORDER BY s.created_at DESC
+          LIMIT 20",
+    )
+    .bind(id)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    let recent_invoices = sqlx::query_as::<_, AdminUserInvoiceItem>(
+        "SELECT id, provider, purpose, status, currency_code, amount_minor,
+                created_at, paid_at
+          FROM invoices
+          WHERE user_id = $1
+          ORDER BY created_at DESC
+          LIMIT 20",
+    )
+    .bind(id)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(Json(AdminUserDetailResponse {
+        id: user.id,
+        telegram_user_id: user.telegram_user_id,
+        username: user.username,
+        first_name: user.first_name,
+        language_code: user.language_code,
+        balance_minor: user.balance_minor,
+        currency_code: user.currency_code,
+        created_at: user.created_at,
+        subscriptions,
+        recent_invoices,
+    }))
+}
+
+async fn update_admin_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(request): Json<UpdateAdminUserRequest>,
+) -> Result<Json<AdminUserResponse>, ApiError> {
+    let actor_user_id = authenticated_admin_id(&state, &headers).await?;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    let current = sqlx::query_as::<_, AdminUserResponse>(
+        "SELECT u.id, u.telegram_user_id, p.username, p.first_name, p.language_code,
+                w.balance_minor, w.currency_code, u.created_at
+          FROM users u
+          JOIN user_profiles p ON p.user_id = u.id
+          JOIN wallets w ON w.user_id = u.id
+          WHERE u.id = $1 AND u.deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "User not found."))?;
+    if let Some(ref first_name) = request.first_name {
+        if first_name.trim().is_empty() || first_name.chars().count() > 128 {
+            return Err(ApiError::invalid("First name is invalid."));
+        }
+        sqlx::query("UPDATE user_profiles SET first_name = $1, updated_at = now() WHERE user_id = $2")
+            .bind(first_name.trim())
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+    }
+    if let Some(ref language_code) = request.language_code {
+        if !matches!(language_code.as_str(), "ru" | "en") {
+            return Err(ApiError::invalid("Language code must be 'ru' or 'en'."));
+        }
+        sqlx::query("UPDATE user_profiles SET language_code = $1, updated_at = now() WHERE user_id = $2")
+            .bind(language_code)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+    }
+    if let Some(ref username) = request.username {
+        let cleaned = username.trim_start_matches('@').to_owned();
+        let cleaned = if cleaned.is_empty() { None } else { Some(cleaned) };
+        sqlx::query("UPDATE user_profiles SET username = $1, updated_at = now() WHERE user_id = $2")
+            .bind(&cleaned)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+    }
+    if let Some(adjustment) = request.balance_adjustment {
+        if adjustment != 0 {
+            sqlx::query("UPDATE wallets SET balance_minor = balance_minor + $1 WHERE user_id = $2")
+                .bind(adjustment)
+                .bind(id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+            sqlx::query(
+                "INSERT INTO wallet_transactions (id, wallet_id, amount_minor, currency_code, kind)
+                 SELECT $1, w.id, $2, w.currency_code, 'admin_adjustment'
+                 FROM wallets w WHERE w.user_id = $3",
+            )
+            .bind(Uuid::now_v7())
+            .bind(adjustment)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
+    }
+    let updated = sqlx::query_as::<_, AdminUserResponse>(
+        "SELECT u.id, u.telegram_user_id, p.username, p.first_name, p.language_code,
+                w.balance_minor, w.currency_code, u.created_at
+          FROM users u
+          JOIN user_profiles p ON p.user_id = u.id
+          JOIN wallets w ON w.user_id = u.id
+          WHERE u.id = $1 AND u.deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    insert_audit_record(
+        &mut transaction,
+        actor_user_id,
+        "client.updated",
+        "client",
+        id,
+        Some(serde_json::to_value(&current).expect("serializable")),
+        serde_json::to_value(&updated).expect("serializable"),
+    )
+    .await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(Json(updated))
+}
+
+async fn delete_admin_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let actor_user_id = authenticated_admin_id(&state, &headers).await?;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if !exists {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "User not found."));
+    }
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    insert_audit_record(
+        &mut transaction,
+        actor_user_id,
+        "client.deleted",
+        "client",
+        id,
+        None,
+        serde_json::json!({"id": id}),
+    )
+    .await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn admin_dashboard(

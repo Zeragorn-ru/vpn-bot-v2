@@ -170,6 +170,7 @@ async fn main() -> Result<()> {
             .map(Arc::from),
     };
     register_commands(&state).await?;
+    clear_restart_flag(&state.database).await?;
     info!("telegram bot process started");
     match load_transport_mode(&state.database).await?.as_str() {
         "polling" => {
@@ -209,6 +210,13 @@ async fn should_restart(database: &PgPool) -> Result<bool> {
     .fetch_one(database)
     .await?;
     Ok(exists)
+}
+
+async fn clear_restart_flag(database: &PgPool) -> Result<()> {
+    sqlx::query("DELETE FROM app_settings WHERE key = 'bot_restart'")
+        .execute(database)
+        .await?;
+    Ok(())
 }
 
 async fn run_polling_loop(state: &BotState) -> Result<()> {

@@ -1,7 +1,7 @@
 #![recursion_limit = "512"]
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env,
     fmt::Write as _,
     net::SocketAddr,
@@ -111,6 +111,25 @@ struct RuntimeSettings {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct TelegramTransportSettings {
     mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminSecretUpdateRequest {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminSecretItem {
+    key: String,
+    label: String,
+    description: String,
+    is_set: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminSecretsResponse {
+    items: Vec<AdminSecretItem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -581,6 +600,27 @@ async fn main() -> Result<()> {
     let database = connect(&database_url)
         .await
         .context("database connection failed")?;
+
+    let secrets_map = load_app_secrets_from_db(&database)
+        .await
+        .unwrap_or_default();
+
+    let tg_token = secrets_map
+        .get("TELEGRAM_BOT_TOKEN")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or(telegram_bot_token);
+
+    let encryption_key_bytes = secrets_map
+        .get("APPLICATION_ENCRYPTION_KEY")
+        .filter(|s| !s.is_empty())
+        .and_then(|encoded| {
+            let bytes = STANDARD.decode(encoded).ok()?;
+            let arr: [u8; 32] = bytes.try_into().ok()?;
+            Some(arr)
+        })
+        .unwrap_or(encryption_key);
+
     ensure_trial_settings(&database)
         .await
         .context("trial settings initialization failed")?;
@@ -599,10 +639,10 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         database,
         redis: redis::Client::open(redis_url).context("REDIS_URL is invalid")?,
-        telegram_bot_token: Arc::from(telegram_bot_token),
-        encryption_key: Arc::new(encryption_key),
+        telegram_bot_token: Arc::from(tg_token),
+        encryption_key: Arc::new(encryption_key_bytes),
         bootstrap_admin_telegram_ids: Arc::new(load_bootstrap_admin_telegram_ids()?),
-        payment_providers: build_payment_providers()?,
+        payment_providers: build_payment_providers(&secrets_map)?,
         subscription_public_url: Arc::from(subscription_public_url),
     });
 
@@ -648,6 +688,10 @@ async fn main() -> Result<()> {
         .route(
             "/api/v1/admin/payment-providers/{provider}",
             put(update_admin_payment_provider),
+        )
+        .route(
+            "/api/v1/admin/secrets",
+            get(admin_secrets).put(update_admin_secret),
         )
         .route(
             "/api/v1/admin/tariffs",
@@ -1648,6 +1692,118 @@ async fn update_admin_payment_provider(
     .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
     Ok(Json(response))
+}
+
+const KNOWN_SECRETS: &[(&str, &str, &str)] = &[
+    (
+        "TELEGRAM_BOT_TOKEN",
+        "Токен Telegram бота",
+        "Токен для Bot API. Режим транспорта зависит от этого значения.",
+    ),
+    (
+        "APPLICATION_ENCRYPTION_KEY",
+        "Ключ шифрования",
+        "Base64 32-byte ключ AES-256-GCM. Смена ключа делает старые зашифрованные данные недоступными.",
+    ),
+    (
+        "CRYPTO_PAY_TOKEN",
+        "Crypto Pay токен",
+        "API-токен Crypto Pay для приёма крипто-платежей.",
+    ),
+    (
+        "CRYPTO_PAY_BASE_URL",
+        "Crypto Pay API URL",
+        "Базовый URL Crypto Pay API.",
+    ),
+    (
+        "ANORE_API_KEY",
+        "Anore API ключ",
+        "API ключ платёжной системы Anore.",
+    ),
+    (
+        "ANORE_SIGNING_SECRET",
+        "Anore signing secret",
+        "Секрет подписи для верификации вебхуков Anore.",
+    ),
+    ("ANORE_BASE_URL", "Anore API URL", "Базовый URL Anore API."),
+];
+
+async fn load_app_secrets_from_db(database: &PgPool) -> Result<HashMap<String, String>> {
+    let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM app_secrets")
+        .fetch_all(database)
+        .await?;
+    let mut map = std::collections::HashMap::new();
+    for (key, value) in rows {
+        map.insert(key, value);
+    }
+    Ok(map)
+}
+
+async fn admin_secrets(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminSecretsResponse>, ApiError> {
+    authenticated_admin_id(&state, &headers).await?;
+    let db_secrets = load_app_secrets_from_db(&state.database)
+        .await
+        .unwrap_or_default();
+    let items = KNOWN_SECRETS
+        .iter()
+        .map(|(key, label, description)| {
+            let is_set = db_secrets.get(*key).map(|v| !v.is_empty()).unwrap_or(false)
+                || env::var(key)
+                    .map(|v| !v.is_empty() && v.as_str() != "replace-me")
+                    .unwrap_or(false);
+            AdminSecretItem {
+                key: key.to_string(),
+                label: label.to_string(),
+                description: description.to_string(),
+                is_set,
+            }
+        })
+        .collect();
+    Ok(Json(AdminSecretsResponse { items }))
+}
+
+async fn update_admin_secret(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<AdminSecretUpdateRequest>,
+) -> Result<StatusCode, ApiError> {
+    let actor_user_id = authenticated_admin_id(&state, &headers).await?;
+    if !KNOWN_SECRETS.iter().any(|(k, _, _)| *k == request.key) {
+        return Err(ApiError::invalid("Unknown secret key."));
+    }
+    if request.value.is_empty() {
+        sqlx::query("DELETE FROM app_secrets WHERE key = $1")
+            .bind(&request.key)
+            .execute(&state.database)
+            .await
+            .map_err(database_error)?;
+    } else {
+        sqlx::query(
+            "INSERT INTO app_secrets (key, value, updated_at)
+             VALUES ($1, $2, now())
+             ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()",
+        )
+        .bind(&request.key)
+        .bind(&request.value)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+    }
+    sqlx::query(
+        "INSERT INTO audit_log (id, actor_user_id, action, target_type, after_value, correlation_id)
+         VALUES ($1, $2, 'secret.updated', 'secret', $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(actor_user_id)
+    .bind(serde_json::json!({"key": request.key}))
+    .bind(Uuid::now_v7())
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn admin_tariffs(
@@ -2961,35 +3117,70 @@ async fn invoice_amount_and_purpose(
     }
 }
 
-fn build_payment_providers() -> Result<Vec<Arc<dyn PaymentProvider>>> {
+fn build_payment_providers(
+    secrets: &std::collections::HashMap<String, String>,
+) -> Result<Vec<Arc<dyn PaymentProvider>>> {
     let mut providers: Vec<Arc<dyn PaymentProvider>> = Vec::new();
-    if let Ok(token) = env::var("CRYPTO_PAY_TOKEN")
-        && !token.is_empty()
-        && token != "replace-me"
+    if let Some(token) = secrets
+        .get("CRYPTO_PAY_TOKEN")
+        .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        .cloned()
+        .or_else(|| {
+            env::var("CRYPTO_PAY_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        })
     {
+        let base_url = secrets
+            .get("CRYPTO_PAY_BASE_URL")
+            .cloned()
+            .unwrap_or_else(|| {
+                env::var("CRYPTO_PAY_BASE_URL")
+                    .unwrap_or_else(|_| "https://pay.crypt.bot/api".to_owned())
+            });
         providers.push(Arc::new(CryptoPayProvider::new(CryptoPayConfig {
             api_token: token,
-            base_url: env::var("CRYPTO_PAY_BASE_URL")
-                .unwrap_or_else(|_| "https://pay.crypt.bot/api".to_owned()),
+            base_url,
         })?));
     }
-    if let (Ok(api_key), Ok(signing_secret)) =
-        (env::var("ANORE_API_KEY"), env::var("ANORE_SIGNING_SECRET"))
-        && !api_key.is_empty()
-        && !signing_secret.is_empty()
-        && api_key != "replace-me"
-    {
+    let api_key_opt = secrets
+        .get("ANORE_API_KEY")
+        .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        .cloned()
+        .or_else(|| {
+            env::var("ANORE_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        });
+    let signing_secret_opt = secrets
+        .get("ANORE_SIGNING_SECRET")
+        .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        .cloned()
+        .or_else(|| {
+            env::var("ANORE_SIGNING_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        });
+    if let (Some(api_key), Some(signing_secret)) = (api_key_opt, signing_secret_opt) {
+        let base_url = secrets.get("ANORE_BASE_URL").cloned().unwrap_or_else(|| {
+            env::var("ANORE_BASE_URL").unwrap_or_else(|_| "https://api.anore.cc/v1".to_owned())
+        });
         providers.push(Arc::new(AnoreProvider::new(AnoreConfig {
             api_key,
             signing_secret,
-            base_url: env::var("ANORE_BASE_URL")
-                .unwrap_or_else(|_| "https://api.anore.cc/v1".to_owned()),
+            base_url,
         })?));
     }
-    if let Ok(token) = env::var("TELEGRAM_BOT_TOKEN")
-        && !token.is_empty()
-        && token != "replace-me"
-    {
+    let tg_token = secrets
+        .get("TELEGRAM_BOT_TOKEN")
+        .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        .cloned()
+        .or_else(|| {
+            env::var("TELEGRAM_BOT_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty() && s.as_str() != "replace-me")
+        });
+    if let Some(token) = tg_token {
         providers.push(Arc::new(TelegramStarsProvider::new(TelegramStarsConfig {
             bot_token: token,
         })?));

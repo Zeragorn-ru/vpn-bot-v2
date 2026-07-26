@@ -66,10 +66,10 @@ function App() {
 
   const load = async (session) => {
     const get = (path) => request(path, {}, session);
-    const [dashboard, analytics, settings, referralSettings, providers, publicSettings, runtimeSettings, telegramTransport, tariffs, channels, promos, users, subscriptions, invoices, audit] = await Promise.all([
-      get("/admin/dashboard"), get("/admin/analytics"), get("/admin/trial-settings"), get("/admin/referral-settings"), get("/admin/payment-providers"), get("/admin/public-settings"), get("/admin/runtime-settings"), get("/admin/telegram-transport"), get("/admin/tariffs"), get("/admin/required-channels"), get("/admin/promos"), get("/admin/users?limit=50&offset=0"), get("/admin/subscriptions?limit=50&offset=0"), get("/admin/invoices?limit=50&offset=0"), get("/admin/audit?limit=50&offset=0")
+    const [dashboard, analytics, settings, referralSettings, providers, publicSettings, runtimeSettings, telegramTransport, tariffs, channels, promos, users, subscriptions, invoices, audit, secrets] = await Promise.all([
+      get("/admin/dashboard"), get("/admin/analytics"), get("/admin/trial-settings"), get("/admin/referral-settings"), get("/admin/payment-providers"), get("/admin/public-settings"), get("/admin/runtime-settings"), get("/admin/telegram-transport"), get("/admin/tariffs"), get("/admin/required-channels"), get("/admin/promos"), get("/admin/users?limit=50&offset=0"), get("/admin/subscriptions?limit=50&offset=0"), get("/admin/invoices?limit=50&offset=0"), get("/admin/audit?limit=50&offset=0"), get("/admin/secrets")
     ]);
-    setData({ dashboard, analytics, settings, referralSettings, providers, publicSettings, runtimeSettings, telegramTransport, tariffs, channels, promos, users, subscriptions, invoices, audit });
+    setData({ dashboard, analytics, settings, referralSettings, providers, publicSettings, runtimeSettings, telegramTransport, tariffs, channels, promos, users, subscriptions, invoices, audit, secrets });
   };
 
   const bootstrap = async () => {
@@ -129,7 +129,7 @@ function App() {
     tariffs: <Tariffs items={data.tariffs} onSave={(body, id) => mutate(`/admin/tariffs${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Тариф обновлён." : "Тариф создан.")} />,
     promos: <Promos items={data.promos} onSave={(body, id) => mutate(`/admin/promos${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Промокод обновлён." : "Промокод создан.")} />,
     channels: <Channels items={data.channels} onSave={(body, id) => mutate(`/admin/required-channels${id ? `/${id}` : ""}`, id ? "PUT" : "POST", body, id ? "Канал обновлён." : "Канал добавлен.")} />,
-    integrations: <Integrations items={data.providers} telegramTransport={data.telegramTransport} runtimeSettings={data.runtimeSettings} publicSettings={data.publicSettings} onToggle={(item) => mutate(`/admin/payment-providers/${item.provider_code}`, "PUT", { is_enabled: !item.is_enabled }, item.is_enabled ? "Провайдер выключен." : "Провайдер включен.")} />,
+    integrations: <Integrations items={data.providers} telegramTransport={data.telegramTransport} runtimeSettings={data.runtimeSettings} publicSettings={data.publicSettings} secrets={data.secrets} onSaveSecret={(key, value) => mutate("/admin/secrets", "PUT", { key, value }, `Секрет ${key} обновлён. Требуется перезапуск.`)} onToggle={(item) => mutate(`/admin/payment-providers/${item.provider_code}`, "PUT", { is_enabled: !item.is_enabled }, item.is_enabled ? "Провайдер выключен." : "Провайдер включен.")} />,
     policies: <Policies settings={data.settings} referrals={data.referralSettings} onSave={(path, body, message) => mutate(path, "PUT", body, message)} />,
     runtime: <Runtime data={data} onSave={(path, body, message) => mutate(path, "PUT", body, message)} />,
     audit: <Audit data={data.audit} />
@@ -484,40 +484,36 @@ function ResourcePage({ kicker, title, description, items, initial, decode, onSa
   );
 }
 
-function Integrations({ items, onToggle, telegramTransport, runtimeSettings, publicSettings }) {
+function Integrations({ items, onToggle, telegramTransport, runtimeSettings, publicSettings, secrets, onSaveSecret }) {
   const tt = telegramTransport || {};
   const rs = runtimeSettings || {};
   const ps = publicSettings || {};
   return (
     <>
-      <section className="section-head"><div><p>ДОСТУП / ИНТЕГРАЦИИ</p><h1>Интеграции</h1><span>Состояние внешних сервисов и подключений.</span></div></section>
+      <section className="section-head"><div><p>ДОСТУП / ИНТЕГРАЦИИ</p><h1>Интеграции</h1><span>Состояние внешних сервисов и управление секретами.</span></div></section>
       <section className="status-grid">
         <article className="status-card">
           <div className="sc-head"><span className="sc-title">Telegram Bot</span><span className="badge ok">Активен</span></div>
           <div className="sc-value">{tt.mode === "webhook" ? "Webhook" : "Polling"}</div>
-          <div className="sc-desc">Режим транспорта: <strong>{tt.mode || "—"}</strong>. Токен задаётся переменной <code>TELEGRAM_BOT_TOKEN</code> при запуске контейнера.</div>
+          <div className="sc-desc">Режим транспорта: <strong>{tt.mode || "—"}</strong>. Токен задаётся переменной <code>TELEGRAM_BOT_TOKEN</code>.</div>
         </article>
         <article className="status-card">
           <div className="sc-head"><span className="sc-title">Remnawave</span><span className="badge ok">Подключён</span></div>
           <div className="sc-value">VPN Backend</div>
-          <div className="sc-desc">Выдача конфигураций и управление доступом через Remnawave. URL подписки: <strong>{ps.subscription_public_url || "—"}</strong></div>
+          <div className="sc-desc">URL подписки: <strong>{ps.subscription_public_url || "—"}</strong></div>
         </article>
         <article className="status-card">
-          <div className="sc-head"><span className="sc-title">Webhook</span><span className={`badge ${tt.mode === "webhook" ? "ok" : "warn"}`}>{tt.mode === "webhook" ? "Активен" : "Отключён"}</span></div>
-          <div className="sc-value">{ps.telegram_webhook_url || "—"}</div>
-          <div className="sc-desc">Адрес приёма обновлений Telegram. Работает при режиме webhook.</div>
+          <div className="sc-head"><span className="sc-title">Шифрование</span><span className="badge ok">AES-256-GCM</span></div>
+          <div className="sc-value">Ключ защищён</div>
+          <div className="sc-desc"><code>APPLICATION_ENCRYPTION_KEY</code> — 32-byte ключ.</div>
         </article>
       </section>
+      <Secrets items={secrets?.items || []} onSave={onSaveSecret} />
       <section className="status-grid">
         <article className="status-card">
           <div className="sc-head"><span className="sc-title">Порты</span><span className="badge ok">Настроены</span></div>
           <div className="sc-value">API {rs.api_host_port || "—"} / App {rs.mini_app_host_port || "—"} / Admin {rs.admin_host_port || "—"}</div>
           <div className="sc-desc">Локальные порты контейнеров. Изменяются в разделе «Среда».</div>
-        </article>
-        <article className="status-card">
-          <div className="sc-head"><span className="sc-title">Шифрование</span><span className="badge ok">AES-256-GCM</span></div>
-          <div className="sc-value">Ключ защищён</div>
-          <div className="sc-desc"><code>APPLICATION_ENCRYPTION_KEY</code> задаётся переменной окружения. Используется для шифрования учётных данных VPN.</div>
         </article>
         <article className="status-card">
           <div className="sc-head"><span className="sc-title">Mini App</span><span className={`badge ${ps.mini_app_url ? "ok" : "warn"}`}>{ps.mini_app_url ? "Настроен" : "Не задан"}</span></div>
@@ -526,6 +522,7 @@ function Integrations({ items, onToggle, telegramTransport, runtimeSettings, pub
         </article>
       </section>
       <section className="provider-grid">
+        <div style={{ gridColumn: "1 / -1" }}><h2 style={{ margin: "0 0 4px", fontSize: "var(--font-lg)", fontWeight: 700 }}>Платёжные провайдеры</h2><p style={{ margin: 0, fontSize: "var(--font-sm)", color: "var(--muted)" }}>Включайте только настроенные провайдеры.</p></div>
         {(items || []).map((item) => (
           <article className="provider-card" key={item.provider_code}>
             <div><p>{providerNames[item.provider_code] || item.provider_code}</p><h2>{item.is_enabled ? "Включён" : "Выключен"}</h2><small>{item.is_configured ? "Учётные данные настроены" : "Не настроен"}</small></div>
@@ -534,6 +531,48 @@ function Integrations({ items, onToggle, telegramTransport, runtimeSettings, pub
         ))}
       </section>
     </>
+  );
+}
+
+function Secrets({ items, onSave }) {
+  const [editing, setEditing] = useState({});
+  const [saving, setSaving] = useState(null);
+  const handleSave = async (key) => {
+    setSaving(key);
+    await onSave(key, editing[key] || "");
+    setSaving(null);
+    setEditing((prev) => { const next = { ...prev }; delete next[key]; return next; });
+  };
+  return (
+    <section style={{ marginBottom: "var(--gap)" }}>
+      <div style={{ marginBottom: 12 }}><h2 style={{ margin: "0 0 4px", fontSize: "var(--font-lg)", fontWeight: 700 }}>Секреты</h2><p style={{ margin: 0, fontSize: "var(--font-sm)", color: "var(--muted)" }}>Значения замаскированы. Введите новое значение для замены. Требуется перезапуск API для применения.</p></div>
+      <div className="status-grid">
+        {items.map((item) => (
+          <article className="status-card" key={item.key}>
+            <div className="sc-head">
+              <span className="sc-title">{item.label}</span>
+              <span className={`badge ${item.is_set ? "ok" : "warn"}`}>{item.is_set ? "Задан" : "Не задан"}</span>
+            </div>
+            <p style={{ margin: "0 0 8px", fontSize: "var(--font-xs)", color: "var(--muted)", lineHeight: 1.4 }}>{item.description}</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="password"
+                placeholder={item.is_set ? "••••••••" : "Введите значение..."}
+                value={editing[item.key] ?? ""}
+                onChange={(e) => setEditing((prev) => ({ ...prev, [item.key]: e.target.value }))}
+                style={{ flex: 1, padding: "6px 10px", background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", fontSize: "var(--font-sm)", outline: "none" }}
+              />
+              <button
+                className="primary"
+                disabled={!editing[item.key] || saving === item.key}
+                onClick={() => handleSave(item.key)}
+                style={{ padding: "6px 14px", fontSize: "var(--font-xs)", whiteSpace: "nowrap" }}
+              >{saving === item.key ? "..." : "Заменить"}</button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

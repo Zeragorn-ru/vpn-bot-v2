@@ -2363,6 +2363,31 @@ async fn admin_user_detail(
     }))
 }
 
+async fn apply_balance_adjustment(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    adjustment: i64,
+) -> Result<(), ApiError> {
+    sqlx::query("UPDATE wallets SET balance_minor = balance_minor + $1 WHERE user_id = $2")
+        .bind(adjustment)
+        .bind(user_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO wallet_transactions (id, wallet_id, amount_minor, currency_code, kind)
+         SELECT $1, w.id, $2, w.currency_code, 'admin_adjustment'
+         FROM wallets w WHERE w.user_id = $3",
+    )
+    .bind(Uuid::now_v7())
+    .bind(adjustment)
+    .bind(user_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
 async fn update_admin_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2428,23 +2453,7 @@ async fn update_admin_user(
     }
     if let Some(adjustment) = request.balance_adjustment {
         if adjustment != 0 {
-            sqlx::query("UPDATE wallets SET balance_minor = balance_minor + $1 WHERE user_id = $2")
-                .bind(adjustment)
-                .bind(id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(database_error)?;
-            sqlx::query(
-                "INSERT INTO wallet_transactions (id, wallet_id, amount_minor, currency_code, kind)
-                 SELECT $1, w.id, $2, w.currency_code, 'admin_adjustment'
-                 FROM wallets w WHERE w.user_id = $3",
-            )
-            .bind(Uuid::now_v7())
-            .bind(adjustment)
-            .bind(id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+            apply_balance_adjustment(&mut transaction, id, adjustment).await?;
         }
     }
     let updated = sqlx::query_as::<_, AdminUserResponse>(

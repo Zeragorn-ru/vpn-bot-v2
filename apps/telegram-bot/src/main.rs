@@ -142,13 +142,23 @@ struct TelegramChatMember {
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();
-    let token = env::var("TELEGRAM_BOT_TOKEN").context("TELEGRAM_BOT_TOKEN is required")?;
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     let database = connect(&database_url)
         .await
         .context("database connection failed")?;
-    let mini_app_url =
-        env::var("MINI_APP_PUBLIC_URL").context("MINI_APP_PUBLIC_URL is required")?;
+
+    let token = match env::var("TELEGRAM_BOT_TOKEN") {
+        Ok(value) if !value.is_empty() => value,
+        _ => load_secret_from_db(&database, "TELEGRAM_BOT_TOKEN")
+            .await
+            .context("TELEGRAM_BOT_TOKEN is required (set in env or app_secrets)")?,
+    };
+    let mini_app_url = match env::var("MINI_APP_PUBLIC_URL") {
+        Ok(value) if !value.is_empty() => value,
+        _ => load_secret_from_db(&database, "MINI_APP_PUBLIC_URL")
+            .await
+            .context("MINI_APP_PUBLIC_URL is required (set in env or app_secrets)")?,
+    };
     validate_mini_app_url(&mini_app_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(35))
@@ -158,16 +168,20 @@ async fn main() -> Result<()> {
     let support_url = env::var("SUPPORT_URL")
         .ok()
         .filter(|value| !value.is_empty());
+    let webhook_secret = match env::var("TELEGRAM_WEBHOOK_SECRET") {
+        Ok(value) if !value.is_empty() => Some(Arc::from(value)),
+        _ => load_secret_from_db(&database, "TELEGRAM_WEBHOOK_SECRET")
+            .await
+            .ok()
+            .map(Arc::from),
+    };
     let state = BotState {
         client,
         database,
         token: Arc::from(token),
         mini_app_url: Arc::from(mini_app_url),
         support_url: support_url.map(Arc::from),
-        webhook_secret: env::var("TELEGRAM_WEBHOOK_SECRET")
-            .ok()
-            .filter(|value| !value.is_empty())
-            .map(Arc::from),
+        webhook_secret,
     };
     register_commands(&state).await?;
     clear_restart_flag(&state.database).await?;
@@ -217,6 +231,15 @@ async fn clear_restart_flag(database: &PgPool) -> Result<()> {
         .execute(database)
         .await?;
     Ok(())
+}
+
+async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
+        .bind(key)
+        .fetch_optional(database)
+        .await?
+        .filter(|value| !value.is_empty())
+        .context(format!("secret {key} not found in app_secrets"))
 }
 
 async fn run_polling_loop(state: &BotState) -> Result<()> {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueries, useMutation, useQuery } from "../lib/api.jsx";
 import { providerLabel } from "../lib/format.js";
 import { Badge, Card, ErrorState, Field, Loader, PageHeader, Toggle } from "../components/ui.jsx";
@@ -166,7 +166,14 @@ function SettingsForm({ id, title, description, value, children, onSubmit, pendi
 
 const useDraft = (value) => {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const prev = useRef(JSON.stringify(value));
+  useEffect(() => {
+    const next = JSON.stringify(value);
+    if (prev.current !== next) {
+      prev.current = next;
+      setDraft(value);
+    }
+  }, [value]);
   return [draft, setDraft];
 };
 

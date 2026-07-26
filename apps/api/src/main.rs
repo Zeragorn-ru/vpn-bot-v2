@@ -764,10 +764,7 @@ async fn main() -> Result<()> {
             get(admin_promos).post(create_admin_promo),
         )
         .route("/api/v1/admin/promos/{id}", put(update_admin_promo))
-        .route(
-            "/api/v1/admin/bot/restart",
-            post(admin_restart_bot),
-        )
+        .route("/api/v1/admin/bot/restart", post(admin_restart_bot))
         .route("/api/v1/tariffs", get(tariffs))
         .route("/api/v1/payment-providers", get(payment_providers))
         .route("/api/v1/purchases", post(purchase))

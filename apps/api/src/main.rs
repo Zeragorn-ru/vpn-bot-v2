@@ -2388,33 +2388,43 @@ async fn update_admin_user(
         if first_name.trim().is_empty() || first_name.chars().count() > 128 {
             return Err(ApiError::invalid("First name is invalid."));
         }
-        sqlx::query("UPDATE user_profiles SET first_name = $1, updated_at = now() WHERE user_id = $2")
-            .bind(first_name.trim())
-            .bind(id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE user_profiles SET first_name = $1, updated_at = now() WHERE user_id = $2",
+        )
+        .bind(first_name.trim())
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
     }
     if let Some(ref language_code) = request.language_code {
         if !matches!(language_code.as_str(), "ru" | "en") {
             return Err(ApiError::invalid("Language code must be 'ru' or 'en'."));
         }
-        sqlx::query("UPDATE user_profiles SET language_code = $1, updated_at = now() WHERE user_id = $2")
-            .bind(language_code)
-            .bind(id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE user_profiles SET language_code = $1, updated_at = now() WHERE user_id = $2",
+        )
+        .bind(language_code)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
     }
     if let Some(ref username) = request.username {
         let cleaned = username.trim_start_matches('@').to_owned();
-        let cleaned = if cleaned.is_empty() { None } else { Some(cleaned) };
-        sqlx::query("UPDATE user_profiles SET username = $1, updated_at = now() WHERE user_id = $2")
-            .bind(&cleaned)
-            .bind(id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        let cleaned = if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned)
+        };
+        sqlx::query(
+            "UPDATE user_profiles SET username = $1, updated_at = now() WHERE user_id = $2",
+        )
+        .bind(&cleaned)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
     }
     if let Some(adjustment) = request.balance_adjustment {
         if adjustment != 0 {
@@ -2478,7 +2488,11 @@ async fn delete_admin_user(
     .await
     .map_err(database_error)?;
     if !exists {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "User not found."));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "User not found.",
+        ));
     }
     sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
         .bind(id)

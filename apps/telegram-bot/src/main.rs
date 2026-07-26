@@ -1085,7 +1085,11 @@ async fn show_access(
         token,
         chat_id,
         &text,
-        Some(open_app_keyboard_with_screen(&bot_user.language_code, mini_app_url, "access")),
+        Some(open_app_keyboard_with_screen(
+            &bot_user.language_code,
+            mini_app_url,
+            "access",
+        )),
     )
     .await
 }

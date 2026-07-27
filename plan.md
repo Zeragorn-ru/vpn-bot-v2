@@ -58,13 +58,12 @@
 
 ```text
 apps/
-  api/                 # HTTP API для админки и Mini App
-  telegram-bot/        # polling/webhook Telegram и пользовательские диалоги
-  billing-worker/      # платежи, webhooks, outbox, периодические задачи
-  provisioning-worker/ # Remnawave и жизненный цикл VPN-подписок
-  notification-worker/ # уведомления, отчёты, рассылки
+  api/                 # HTTP API для админки, Mini App и Telegram Bot
+  telegram-bot/        # Telegram Bot (polling/webhook) — только обработка команд
+  aggregator/          # агрегатор подписки (backend + frontend)
+  landing/             # лендинг страница (статичный SPA)
 crates/
-  domain/              # сущности, правила и use cases без HTTP/Telegram/SQL
+  domain/              # бизнес-логика: модели, state machine, правила
   storage/             # PostgreSQL-репозитории и миграции
   integrations/        # Telegram, платёжные провайдеры, Remnawave
   api-contracts/       # DTO, OpenAPI-схемы, общие ошибки
@@ -72,35 +71,187 @@ crates/
 web/
   admin/               # SPA админки
   mini-app/            # Telegram Mini App
+  aggregator/          # SPA страницы подписки (для браузера)
 deploy/
 docs/
 ```
 
-Рекомендуемая базовая реализация: `tokio`, `axum`, `sqlx`, `serde`, `tracing`, `tower-http`, `reqwest`, `teloxide` или эквивалентная тонкая Telegram-обвязка. Окончательный набор библиотек выбирается после короткого технического прототипа; версии фиксируются в `Cargo.lock`.
-
 ### 3.2 Границы сервисов
 
-На первом production-релизе развернуть следующие процессы. Они могут находиться в одном workspace и использовать общие crates, но не должны обмениваться внутренними HTTP-вызовами для синхронных бизнес-операций.
+На первом production-релизе развернуть следующие процессы.
 
-| Компонент | Ответственность | Хранилище/интерфейсы |
+#### Backend (API)
+
+| Сервис | Ответственность | Хранилище/интерфейсы |
 | --- | --- | --- |
-| `api` | REST API, Telegram Mini App auth, админская авторизация, выдача SPA, webhook-входы | PostgreSQL, Redis, HTTP |
-| `telegram-bot` | Команды, callback-и, диалоги, отправка сообщений | PostgreSQL, Redis, Telegram API |
-| `billing-worker` | Счета, сверка платежей, обработка webhook-ов, баланс, начисления | PostgreSQL, Redis, payment APIs |
-| `provisioning-worker` | Создание, продление, блокировка и синхронизация VPN-подписок | PostgreSQL, Remnawave API |
-| `notification-worker` | Очередь уведомлений, рассылки, напоминания, ежедневные отчёты | PostgreSQL, Redis, Telegram API |
-| `admin-web` | Статическая SPA и reverse proxy к API | HTTP |
-| `mini-app-web` | Статическая SPA Mini App | HTTP |
+| `api` | REST API для всех фронтендов (Mini App, Admin, Telegram Bot), авторизация, webhook-и, выдача SPA, биллинг, провижининг, уведомления, реконсиляция | PostgreSQL, Redis, HTTP |
+| `telegram-bot` | Обработка команд, callback-ов, диалогов — только бизнес-логика, без прямого доступа к БД | HTTP → API |
 
-### 3.3 Обмен событиями и надёжность
+> **Все модули backend** (billing, provisioning, notification) — это часть `api`, а не отдельные процессы. Они взаимодействуют с БД напрямую через общие crates.
+
+#### Агрегатор
+
+| Сервис | Ответственность | Хранилище/интерфейсы |
+| --- | --- | --- |
+| `aggregator` (backend) | Обработка запросов от VPN-клиентов, трансформация данных Remnawave, отдача страниц подписки в браузере | Remnawave API, PostgreSQL |
+| `aggregator` (frontend) | Страница подписки для браузера (informative) | HTTP |
+
+**Логика агрегатора:**
+1. Клиент обращается к агрегатору
+2. Агрегатор определяет тип клиента: браузер или VPN-клиент
+3. **Если браузер** — отдаёт информативную страницу с данными о подписке
+4. **Если VPN-клиент** — идёт в Remnawave, получает данные в самом информативном формате, трансформирует под конкретный VPN-клиент и отдаёт
+
+#### Фронтенды
+
+| Сервис | Ответственность | Хранилище/интерфейсы |
+| --- | --- | --- |
+| `admin-web` | SPA админки | HTTP → API |
+| `mini-app-web` | SPA Mini App в Telegram | HTTP → API |
+| `landing` | Лендинг страница (статичный SPA) | HTTP |
+
+> **Промокоды и рефералы:** обрабатываются через фронт → API. В боте все пользователи равны, промокоды/рефералы применяются при оплате.
+
+### 3.3 Модули backend (api)
+
+#### Доменные модули (crates/domain)
+
+| Модуль | Описание |
+| --- | --- |
+| `user` | Модель пользователя, профиль, язык, баланс |
+| `subscription` | Подписка: создание, продление, истечение, state machine |
+| `tariff` | Тарифы: типы (подписка/трафик), длительность, цена |
+| `payment` | Инвойсы, статусы, реконсиляция |
+| `promo` | Промокоды: создание, валидация, применение |
+| `referral` | Рефералы: программа, бонусы, статистика |
+| `notification` | Шаблоны, очереди, доставка |
+| `admin` | RBAC, аудит, настройки |
+
+#### Интеграции (crates/integrations)
+
+| Модуль | Описание |
+| --- | --- |
+| `telegram` | Telegram Bot API, webhook, Mini App auth |
+| `remnawave` | Remnawave API client |
+| `payments` | Crypto Pay, Stars, Platega, Anore — общий trait |
+
+#### Модули api (приложение)
+
+| Модуль | Описание |
+| --- | --- |
+| `billing` | Обработка платежей, webhook-и провайдеров, баланс, начисления |
+| `provisioning` | Выдача/продление/блокировка подписок через Remnawave |
+| `notification` | Очередь уведомлений, рассылки, напоминания |
+
+### 3.4 Обмен событиями и надёжность
 
 - [ ] Использовать transactional outbox в PostgreSQL для событий `payment_confirmed`, `subscription_requested`, `subscription_changed`, `notification_requested` и событий аудита.
 - [x] Воркер читает события с PostgreSQL `FOR UPDATE SKIP LOCKED`, фиксирует lease, владельца, attempts, время следующей попытки и последнюю ошибку. Lease-aware claim исключает параллельную обработку после commit и позволяет восстановить задание после restart; real PostgreSQL test покрывает claim, stale-lease recovery и retry deferral.
 - [ ] Все внешние операции имеют idempotency key. Повтор webhook-а, рестарт воркера или сетевой таймаут не должен дважды пополнять баланс или выдавать второй VPN-ключ.
-- [ ] Redis использовать для rate limit, краткоживущих сессий, distributed lock и кэша; Redis не является источником денежных или подписочных данных.
+- [ ] Redis использовать для rate limit, кратоживущих сессий, distributed lock и кэша; Redis не является источником денежных или подписочных данных.
 - [ ] Отложить Kafka/RabbitMQ до подтверждённой потребности. На первом этапе PostgreSQL outbox уменьшает операционную сложность и даёт надёжную доставку.
 
-### 3.4 Внешний API
+### 3.4.1 Rate Limiting
+
+```text
+Redis-based rate limiting для всех входящих запросов:
+
+глобальный (DDoS защита):
+  ├─ лимит на IP: 100 req/min
+  └─ при превышении → 429 Too Many Requests
+
+API:
+  ├─ анонимные эндпоинты: 30 req/min per IP
+  ├─ авторизованные: 100 req/min per user
+  ├─ платёжные webhook-и: 50 req/min per provider
+  └─ admin mutations: 20 req/min per admin
+
+бот:
+  ├─ команды: 20 req/min per user
+  └─ callback-и: 30 req/min per user
+
+алгоритм: sliding window counter (Redis ZSET)
+при блокировке: добавить IP в бан-лист на N секунд
+```
+
+### 3.4.2 Кэширование (Redis)
+
+```text
+кэшируемые сущности:
+  ├─ тарифы: TTL 5 минут (редко меняются)
+  ├─ пользователи: TTL 1 минуту (для бота —частые чтения)
+  └─ настройки приложения: TTL 5 минут
+
+паттерн: cache-aside (read-through)
+  ├─ чтение: check cache → miss → DB → set cache
+  ├─ запись: DB → invalidate cache
+  └─ инвалидация: при изменении через админку — мгновенная
+
+не кэшировать:
+  ├─ подписки (aggregator запрашивает Remnawave напрямую)
+  ├─ платежи (всегда свежие данные)
+  └─ секреты (никогда в кэше)
+```
+
+### 3.4.3 Circuit Breaker и Graceful Degradation
+
+```text
+Remnawave недоступен:
+  ├─ circuit breaker: 5 ошибок подряд → open → retry через 30 сек
+  ├─ уведомление в Telegram: "⚠️ Remnawave недоступна"
+  ├─ новые покупки: инвойс создан, provision в очередь (retry)
+  ├─EXISTING подписки: работают (ноды закэшированы в aggregator)
+  └─ aggregator: отдаёт кэшированные данные или ошибку
+
+Платёжный провайдер недоступен:
+  ├─ circuit breaker: 3 ошибки подряд → open → retry через 60 сек
+  ├─ уведомление в Telegram: "⚠️ {provider} недоступен"
+  ├─ пользователю: показать альтернативный провайдер
+  └─ инвойс: остаётся pending, реконсиляция проверит позже
+
+Redis недоступен:
+  ├─ rate limiting: отключается (accept all)
+  ├─ кэш: пропускается (read from DB)
+  └─ сессии: JWT-based (без Redis)
+  └─ НЕ критично — работает без кэша и rate limit
+
+PostgreSQL недоступен:
+  ├─ ВСЁ останавливается
+  ├─ health check → container restart
+  └─ НЕ допускать: мониторинг, алерты, реплики
+```
+
+### 3.4.4 Аудит (Audit Logging)
+
+```text
+все изменения в БД логируются в таблицу audit_log:
+
+таблица audit_log:
+  ├─ id (uuid)
+  ├─ timestamp (timestamptz)
+  ├─ user_id (uuid, nullable) — кто выполнил
+  ├─ action (text) — create/update/delete/login/logout
+  ├─ entity_type (text) — user/tariff/payment/promo/setting/...
+  ├─ entity_id (uuid, nullable) — что изменилось
+  ├─ details (jsonb) — старые/новые значения
+  ├─ ip_address (inet, nullable)
+  └─ user_agent (text, nullable)
+
+что логируется:
+  ├─ CRUD тарифов, промокодов, каналов
+  ├─ изменение баланса, подписки, трафика
+  ├─ вход/выход из админки
+  ├─ изменение настроек (Remnawave, платежи, Telegram)
+  ├─ создание/удаление пользователей
+  └─ все платёжные операции
+
+просмотр в админке:
+  ├─ фильтр по пользователю, действию, сущности, дате
+  ├─ пагинация
+  └─ экспорт (опционально)
+```
+
+### 3.5 Внешний API
 
 - [ ] Версионировать API через `/api/v1`.
 - [ ] Разделить публичные Mini App маршруты, админские маршруты и webhook-маршруты по middleware/ролям.
@@ -109,6 +260,151 @@ docs/
 - [ ] Изменения контракта проходят contract/integration tests до выпуска фронтенда.
 
 **Критерий готовности:** процессы, владение данными, синхронные API и асинхронные события описаны в `docs/architecture.md` и реализованы без циклических зависимостей.
+
+### 3.6 Performance Targets
+
+```text
+целевые метрики:
+
+API:
+  ├─ latency: p95 < 200ms, p99 < 500ms
+  ├─ throughput: 1000+ req/s
+  └─ error rate: < 0.1%
+
+Aggregator:
+  ├─ latency: p95 < 500ms (включая fetch из Remnawave)
+  ├─ throughput: 500+ concurrent connections
+  └─ cache hit rate: > 80% (для кэшированных данных)
+
+Telegram Bot:
+  ├─ response time: < 2s на команду
+  └─ message delivery: < 5s
+
+resources per container:
+  ├─ api: 2 CPU, 512MB RAM
+  ├─ telegram-bot: 1 CPU, 256MB RAM
+  ├─ aggregator: 2 CPU, 512MB RAM
+  ├─ postgres: 4 CPU, 2GB RAM
+  └─ redis: 1 CPU, 256MB RAM
+```
+
+### 3.7 Схема работы v2 (полный флоу)
+
+#### Агрегатор (отдельный сервис)
+
+Агрегатор — HTTP-сервис, который обрабатывает запросы от VPN-клиентов и браузеров.
+
+**Как в v1 получалась подписка в Remnawave (самый информативный формат):**
+
+```text
+при провижининге (provision_paid_invoice):
+  1. POST/PATCH /api/users → Remnawave создаёт/обновляет пользователя
+  2. Remnawave возвращает subscriptionUrl — это URL для подключения
+  3. subscriptionUrl содержит ВСЮ информацию о нодах в raw формате:
+     - vless://uuid@host:port?... (каждая нода — отдельная строка)
+     - vmess://base64(json)...
+     - trojan://...
+  4. Этот URL сохраняется в vpn_accounts.access_url
+  5. Это САМЫЙ ИНФОРМАТИВНЫЙ формат — содержит все ноды, протоколы, параметры
+```
+
+**Логика агрегатора при запросе:**
+
+```text
+GET /sub/{user_id}?token={hmac_slug}
+
+аутентификация:
+  ├─ hmac_sha256(bot_token, str(user_id))[:20] == token
+  └─ constant-time comparison
+
+определение клиента (is_browser_request):
+  ├─ нет User-Agent → браузер
+  ├─ VPN маркеры (karing, happ, hiddify, clash, sing-box, v2ray...) → VPN клиент
+  ├─ HEAD метод → VPN клиент
+  ├─ User-Agent содержит mozilla/chrome/safari → браузер
+  └─ Accept: text/html → браузер
+
+если БРАУЗЕР:
+  ├─ загрузить данные подписки из БД (user_id → access_url, traffic, expires)
+  ├─ отрисовать HTML страницу:
+  │   ├─ ID пользователя
+  │   ├─ URL подписки
+  │   ├─ использовано трафика
+  │   ├─ срок действия
+  │   ├─ deep links для Happ/INCY
+  │   └─ инструкция по импорту
+  └─ Content-Type: text/html
+
+если VPN КЛИЕНТ:
+  ├─ определить профиль клиента (client_profile):
+  │   ├─ base64: nekoray, nekobox, v2rayN, hiddify, shadowrocket, loon, sing-box (default)
+  │   ├─ xray_json: Happ, v2rayNG, Streisand, INCY
+  │   ├─ singbox_json: Karing
+  │   └─ clash_yaml: Clash, ClashMeta, Clash-Verge, FlClash, Mihomo, Stash
+  │
+  ├─ получить raw подписку из БД (access_url = subscriptionUrl от Remnawave):
+  │   ├─ это САМЫЙ ИНФОРМАТИВНЫЙ формат — содержит все ноды в raw виде
+  │   ├─ fetch(access_url) с заголовками:
+  │   │   User-Agent: Happ/4.7.4/ios/2604141220584
+  │   │   Accept: text/plain,*/*
+  │   │   ↑ Этот User-Agent заставляет Remnawave отдать полный список нод
+  │   │     (vless://..., vmess://...) вместо редиректа или упрощённого формата
+  │   └─ если access_url недоступен → вернуть ошибку
+  │
+  ├─ опционально: загрузить внешние источники (external_sources) и объединить
+  │
+  ├─ объединить все источники, дедуплицировать ноды
+  │
+  ├─ отрендерить в нужном формате для конкретного клиента:
+  │   ├─ base64 → base64-encoded lines (vless://..., vmess://...) — simplest format
+  │   ├─ xray_json → xray config JSON { outbounds: [...], routing: {...} }
+  │   ├─ singbox_json → sing-box config JSON { outbounds: [...] }
+  │   └─ clash_yaml → Clash YAML proxies: [...]
+  │
+  ├─ auto-select (если включён):
+  │   ├─ xray: balancer outbound с leastLoad/leastPing
+  │   └─ sing-box: urltest outbound с probe
+  │
+  ├─ direct route для российских доменов (.ru, .su, yandex, vk...)
+  │
+  └─ response headers:
+      ├─ Profile-Title: base64(brand_name)
+      ├─ Subscription-Userinfo: upload=0; download={used}; total={limit}; expire={unix}
+      ├─ Profile-Update-Interval: 3600
+      ├─ Support-Url, Profile-Web-Page-Url
+      └─ Content-Type: text/plain | application/json | text/yaml
+```
+
+#### Remnawave провижининг (в api)
+
+```text
+provision(invoice, tariff, user):
+  ├─ найти пользователя в Remnawave: GET /api/users/by-telegram-id/{telegram_id}
+  ├─ если существует:
+  │   ├─ expires_at = max(now, current_expiry) + tariff.duration
+  │   ├─ traffic_limit += tariff.traffic_bytes (если докупка трафика)
+  │   └─ PATCH /api/users { uuid, expireAt, trafficLimitBytes }
+  ├─ если не существует:
+  │   ├─ expires_at = now + tariff.duration
+  │   ├─ POST /api/users { username, expireAt, trafficLimitBytes, activeInternalSquads, ... }
+  │   └─ получить uuid
+  ├─ получить subscriptionUrl от Remnawave (содержит raw ноды)
+  └─ сохранить subscriptionUrl в vpn_accounts.access_url
+      ↑ это ТОТ САМЫЙ URL, который агрегтор будет раздавать VPN-клиентам
+        и показывать на странице подписки в браузере
+
+extend(telegram_id, delta_hours):
+  └─ текущий expiry + delta_hours → ensure_user_until
+
+add_traffic(telegram_id, bytes):
+  └─ текущий лимит + bytes → set_traffic_limit
+
+revoke(telegram_id):
+  └─ expires_at = now → ensure_user_until
+
+delete(telegram_id):
+  └─ DELETE /api/users/{uuid}
+```
 
 ## 4. Данные и PostgreSQL
 
@@ -347,7 +643,479 @@ docs/
 - [ ] Политика ретенции логов, audit payload и webhook payload; персональные данные не удерживаются дольше необходимого.
 - [ ] Runbooks: платеж завис в pending, подписка не создана, Remnawave недоступен, Telegram API rate limit, восстановление БД, отзыв скомпрометированного секрета.
 
-## 11. Тестирование
+## 11. Архитектура и схема работы legacy VPN Bot v1
+
+### 11.1 Стек технологий
+
+| Компонент | Технология |
+| --- | --- |
+| Язык | Python 3.12+ |
+| Telegram-фреймворк | aiogram 3.x (polling) |
+| Хранение данных | SQLite (`bot.db`) |
+| Конфигурация | YAML (`config.yml` + `config.local.yml`) |
+| VPN-провайдер | Remnawave API v2 |
+| Платежи | Crypto Pay API, Telegram Stars, Platega, Anore |
+| HTTP-сервер | aiohttp (aggregator, admin panel) |
+| Контейнеризация | Docker + docker-compose |
+
+### 11.2 Структура проекта
+
+```text
+src/vpn_sales_bot/
+  bot.py               # точка входа: инициализация, фоновые задачи, graceful shutdown
+  config.py            # dataclass-модель конфигурации, парсинг YAML
+  db/                  # SQLite-репозитории (users, invoices, vpn_keys, referrals, promo_codes)
+  handlers/
+    __init__.py        # регистрация всех handler-групп в Dispatcher
+    menu.py            # /start, навигация, язык, настройки, подписки
+    tariffs.py         # просмотр тарифов, покупка за баланс, промокоды, триал
+    payments.py        # пополнение баланса, прямая покупка, Stars, webhook/poll
+    admin.py           # административные команды
+    mirrors.py         # зеркала ботов
+    common.py          # общие хелперы (cabinet_text, has_active_vpn, preferred_subscription_url)
+    states.py          # FSM-состояния (TariffStates, TopUpStates)
+  services/
+    context.py         # BotContext — контейнер зависимостей для всех handlers
+  payments.py          # CryptoBotClient, PlategaClient, AnoreClient
+  vpn.py               # VpnProvider (RemnawaveVpnProvider, MockVpnProvider)
+  aggregator/          # HTTP-сервис для VPN-клиентов и browser landing pages
+    api/               # REST-эндпоинты
+    renderers/         # Xray JSON, sing-box JSON, Clash YAML, Base64
+    pages/             # server-rendered HTML subscription pages
+    services/          # business logic
+    transforms/        # нормализация, deduplication нод
+  admin_panel.py       # admin SPA + runtime config applier
+  notifications.py     # отправка уведомлений в Telegram
+  i18n.py              # локализация RU/EN
+  keyboards.py         # inline-клавиатуры
+  text.py              # рендеринг текстов
+  mirrors.py           # менеджер зеркал
+  backups.py           # бэкап SQLite в Telegram
+```
+
+### 11.3 Инициализация и жизненный цикл
+
+```text
+main()
+  ├─ load_config(config.yml)           # парсинг YAML → AppConfig
+  ├─ Database(db_path).init()          # создание таблиц SQLite
+  ├─ build_payments_client()           # CryptoBotClient (mock или live)
+  ├─ build_platega_client()            # PlategaClient
+  ├─ build_anore_client()              # AnoreClient
+  ├─ build_vpn_provider()              # RemnawaveVpnProvider или MockVpnProvider
+  ├─ Bot(token) → get_me()
+  ├─ build_dispatcher(config, db, ...)
+  │   ├─ BotContext(...)               # контейнер зависимостей
+  │   ├─ AggregatorService(...)        # HTTP-сервис
+  │   └─ register_all(dp, ctx)         # регистрация handlers
+  ├─ mirror_manager.start_existing()   # запуск зеркал
+  ├─ [aggregator HTTP server]          # aiohttp на listen_port
+  ├─ [admin panel HTTP server]         # aiohttp на admin_port
+  └─ [background tasks]
+      ├─ dp.start_polling(bot)         # основной polling Telegram
+      ├─ _run_db_backup_loop()         # бэкап SQLite → Telegram (1ч)
+      ├─ _run_subscription_notifications_loop()  # напоминания (1ч)
+      ├─ _run_traffic_notifications_loop()       # трафик-лимиты (30мин)
+      ├─ _run_provider_invoice_poll_loop()       # опрос статусов invoices (15с)
+      └─ _run_daily_report_loop()      # ежедневный отчёт
+```
+
+### 11.4 Пользовательские flow
+
+#### Регистрация и старт
+
+```text
+/start [ref_{referrer_id}]
+  ├─ upsert_user(user_id, username)
+  ├─ set_user_mirror_if_empty(user_id)
+  ├─ ensure_subscription_message()     # проверка подписки на обязательные каналы
+  │   └─ get_chat_member() для каждого канала (кэш 60с)
+  ├─ set_referrer_if_empty()           # привязка реферала
+  └─ render_welcome() → главное меню
+```
+
+#### Триал (72ч, 10 ГБ трафика)
+
+```text
+trial:start
+  ├─ ensure_subscription_callback()
+  ├─ user_lock(user_id)               # защита от гонок
+  ├─ user_has_ever_had_vpn_access()    # проверка:เคย ли был VPN
+  ├─ user_has_used_trial()             # проверка: был ли триал
+  ├─ create_invoice(trial, amount=0)
+  ├─ set_invoice_status("paid")
+  ├─ ensure_min_traffic_limit(10 GB)
+  ├─ vpn_provider.provision()          # → Remnawave POST/PATCH /api/users
+  │   ├─ _get_user(telegram_id)        # GET /api/users/by-telegram-id/{id}
+  │   ├─ _create_user() или _update_user()
+  │   └─ возврат subscriptionUrl
+  ├─ save_vpn_key(invoice, access_key, expires_at)
+  ├─ set_user_access_flags(has_vpn_access=True)
+  └─ set_user_unified_access_url()
+```
+
+#### Покупка тарифа за баланс
+
+```text
+tariff:buy:{code}
+  ├─ validate_discount_promo_code()    # если есть промокод
+  ├─ charge_user_balance(final_price)
+  ├─ create_invoice(tariff, amount, purpose_code)
+  ├─ set_invoice_status("paid")
+  ├─ provision_paid_invoice()
+  │   ├─ product == "vpn": vpn_provider.provision()
+  │   ├─ product == "subscription": vpn_provider.update_expiration()
+  │   └─ product == "traffic": vpn_provider.set_traffic_limit()
+  ├─ save_vpn_key()
+  ├─ set_user_access_flags()
+  └─ notify_payment_success()
+```
+
+#### Прямая покупка тарифа (внешний платёж)
+
+```text
+directpay:{provider}:{code}
+  ├─ create invoice у провайдера
+  │   ├─ CryptoPay: create_amount_invoice() → PaymentLink
+  │   ├─ Platega: create_invoice() → PaymentLink
+  │   ├─ Anore: create_invoice() → PaymentLink
+  │   └─ Stars: send_invoice() → Telegram native checkout
+  ├─ create_invoice(in DB, provider_invoice_id)
+  └─ ожидание оплаты
+      ├─ pre_checkout_query (Stars)
+      ├─ successful_payment (Stars) → handle_paid_direct_purchase()
+      ├─ deposit:check:{id} (ручная проверка)
+      ├─ webhook от Platega/Anore
+      └─ poll loop (CryptoPay/Platega/Anore, каждые 15с)
+          └─ apply_paid_invoice()
+              ├─ mark_invoice_fulfillment_applied()
+              ├─ redeem_invoice_promo_code()
+              └─ provision_paid_invoice()
+```
+
+#### Пополнение баланса
+
+```text
+menu:topup → выбор суммы → topup:{provider}:{amount}
+  ├─ CryptoPay: create_amount_invoice() → deposit invoice
+  ├─ Stars: create invoice → send_invoice()
+  ├─ Platega: create_invoice() → deposit invoice
+  └─ Anore: create_invoice() → deposit invoice
+      └─ после оплаты:
+          ├─ mark_invoice_balance_applied()
+          ├─ add_user_balance()
+          ├─ apply_referral_bonus() → реферальный бонус (%)
+          └─ notify_payment_success()
+```
+
+### 11.5 Платёжные провайдеры
+
+#### Единый контракт (payments.py)
+
+```python
+class CryptoBotClient:
+    async def create_amount_invoice(amount_rub, user_id, description) -> PaymentLink
+    async def get_invoice_status(provider_invoice_id) -> str
+    def is_invoice_paid(status) -> bool
+
+class PlategaClient:
+    async def create_invoice(amount_rub, user_id, description) -> PaymentLink
+    async def get_invoice_status(invoice_id) -> str
+    def is_paid(status) -> bool
+
+class AnoreClient:
+    async def create_invoice(amount_rub, user_id, description) -> PaymentLink
+    async def get_invoice_status(invoice_id) -> str
+    def is_paid(status) -> bool
+    def verify_webhook_signature(raw_body, signature) -> bool
+```
+
+#### PaymentLink
+
+```python
+@dataclass
+class PaymentLink:
+    invoice_id: str              # ID инвойса у провайдера
+    bot_invoice_url: str         # URL для оплаты
+    mini_app_invoice_url: str    # URL для Mini App
+    web_app_invoice_url: str     # URL для WebApp
+```
+
+#### Статусы invoice
+
+| Статус | Описание |
+| --- | --- |
+| `active` | Ожидает оплаты |
+| `paid` | Оплачен, выполняется provisioning |
+| `expired` | Истёк срок оплаты |
+| `failed` | Ошибка обработки |
+| `cancelled` | Отменён (rollback) |
+
+### 11.6 VPN-провижининг (Remnawave API v2)
+
+#### Контракты
+
+```python
+class VpnProvider:
+    async def provision(invoice, tariff, username, traffic_limit_bytes) -> ProvisionedAccess
+    async def get_user(telegram_id) -> dict | None
+    async def update_expiration(telegram_id, delta_hours) -> ProvisionedAccess
+    async def ensure_user_until(telegram_id, expires_at, username) -> ProvisionedAccess
+    async def set_traffic_limit(telegram_id, traffic_limit_bytes) -> ProvisionedAccess
+    async def revoke(telegram_id) -> ProvisionedAccess
+    async def delete_user(telegram_id) -> None
+    async def health_status() -> VpnHealthStatus
+```
+
+#### Remnawave API endpoints
+
+| Операция | Метод | Endpoint |
+| --- | --- | --- |
+| Получить пользователя | GET | `/api/users/by-telegram-id/{telegramId}` |
+| Создать пользователя | POST | `/api/users` |
+| Обновить пользователя | PATCH | `/api/users` |
+| Удалить пользователя | DELETE | `/api/users/{uuid}` |
+| Список squad-ов | GET | `/api/internal-squads` |
+
+#### Payload создания/обновления
+
+```json
+{
+  "username": "vpn_{telegram_id}",
+  "expireAt": "2026-01-01T00:00:00Z",
+  "status": "ACTIVE",
+  "trafficLimitBytes": 10737418240,
+  "trafficLimitStrategy": "NO_RESET",
+  "activeInternalSquads": ["uuid1", "uuid2"],
+  "externalSquadUuid": "uuid3",
+  "tag": "user_tag",
+  "telegramId": 123456,
+  "description": "username"
+}
+```
+
+#### ProvisionedAccess
+
+```python
+@dataclass
+class ProvisionedAccess:
+    access_key: str     # subscriptionUrl из Remnawave
+    expires_at: str     # ISO 8601 UTC
+```
+
+#### Логика provision
+
+```python
+def provision():
+  existing = _get_user(telegram_id)
+  if existing is None:
+    expire_at = now + tariff.duration_hours
+    user = _create_user(payload)
+  else:
+    expire_at = existing.expireAt + tariff.duration_hours  # продление
+    user = _update_user(user_uuid, payload)
+  return user.subscriptionUrl
+```
+
+### 11.7 Агрегатор (subscription gateway)
+
+#### Назначение
+- Генерация защищённого URL для VPN-клиентов
+- Нормализация и deduplication нод из Remnawave
+- Рендеринг конфигов для различных клиентов
+- Browser-запросы → subscription landing page
+
+#### Структура
+
+```text
+aggregator/
+  api/                # REST: /sub/{user_id}, /api/v1/invoices, webhook endpoints
+  renderers/          # client-specific renderers
+    xray.py           # Xray JSON (Happ, v2rayNG, Streisand, INCY)
+    singbox.py        # sing-box JSON (Karing)
+    clash.py          # Clash YAML (Clash-family, Mihomo)
+    base64.py         # Base64 URI fallback
+  pages/              # server-rendered HTML landing pages
+  services/           # business logic
+    client_profile.py # выбор renderer по User-Agent/Accept
+  transforms/         # нормализация нод, dedup, фильтрация
+  models.py           # dataclass-ы
+  facade.py           # единый входной point
+  request_classifier.py  # определение клиента по заголовкам
+```
+
+#### Client detection
+
+```text
+Request → request_classifier.py
+  ├─ User-Agent содержит "Happ" → Xray JSON
+  ├─ Accept: application/json + platform "Karing" → sing-box JSON
+  ├─ User-Agent содержит "Clash" / "Mihomo" → Clash YAML
+  └─ fallback → Base64 URI
+```
+
+#### URL subscription
+
+```text
+/sub/{user_id}?token={hmac_slug}
+  ├─ Проверка token (HMAC bound to user_id)
+  ├─ Проверка active entitlement
+  ├─ Получение payload из Remnawave subscription URL
+  ├─ Нормализация нод (dedup по address:port)
+  └─ Рендеринг по client profile
+```
+
+### 11.8 Модель данных (SQLite)
+
+#### Основные таблицы
+
+| Таблица | Назначение |
+| --- | --- |
+| `users` | telegram_id, username, balance_rub, language, has_vpn_access, unified_access_url |
+| `user_settings` | notification preferences, mirrors |
+| `invoices` | user_id, tariff_code, amount_rub, status, provider_invoice_id, purpose_code |
+| `vpn_keys` | user_id, invoice_id, access_key, expires_at, tariff_code |
+| `referrals` | referrer_id, referred_id |
+| `referral_rewards` | referrer_id, invoice_id, amount_rub |
+| `promo_codes` | code, promo_type, discount_percent, amount_rub, max_uses, allowed_tariffs |
+| `promo_redemptions` | user_id, promo_code, invoice_id |
+| `traffic_notifications` | user_id, notification_type, sent_at |
+| `subscription_notifications` | user_id, product, notification_type, expires_at, sent_at |
+| `stars_charges` | charge_id, invoice_id, user_id, amount |
+
+#### Ключевые связи
+
+```text
+users.telegram_id ──< invoices.user_id
+invoices.invoice_id ──< vpn_keys.invoice_id
+users.telegram_id ──< referrals.referrer_id (FK: users.telegram_id)
+users.telegram_id ──< vpn_keys.user_id
+invoices.invoice_id ──< referral_rewards.invoice_id
+```
+
+### 11.9 Фоновые задачи
+
+| Задача | Интервал | Описание |
+| --- | --- | --- |
+| `payment_poll` | 15 сек | Опрос активных инвойсов у CryptoPay/Platega/Anore, обработка статусов |
+| `subscription_notify` | 1 час | Уведомления об истечении подписки (3 дня / истекла) |
+| `traffic_notify` | 30 мин | Уведомления о трафике (5/3/1 ГБ) |
+| `daily_report` | по расписанию | Ежедневная сводка в заданный час (MSK) |
+| `db_backup` | 1 час | Бэкап SQLite → Telegram chat |
+
+### 11.10 Telegram Bot API
+
+#### Команды
+
+| Команда | Описание |
+| --- | --- |
+| `/start` | Регистрация, привязка реферала, главное меню |
+| `/start ref_{id}` | Регистрация с реферальным кодом |
+| `/lang`, `/language` | Смена языка |
+
+#### Callback flow
+
+```text
+menu:start       → главное меню
+menu:buy         → список тарифов
+menu:balance     → баланс
+menu:topup       → ввод суммы
+menu:myvpn       → мой доступ (ключ, трафик)
+menu:trial       → триал
+menu:referrals   → реферальная программа
+menu:support     → поддержка
+menu:info        → информация
+menu:settings    → настройки
+menu:language    → выбор языка
+```
+
+### 11.11 Конфигурация (config.yml)
+
+```yaml
+bot:
+  token: "..."
+  admin_ids: [123456]
+
+brand:
+  name: "VPN Service"
+  support_username: "@support"
+  bot_username: "@vpn_bot"
+
+referral:
+  enabled: true
+  reward_percent: 10
+
+payments:
+  provider: "cryptobot"
+  mode: "live"
+  asset: "USDT"
+  payment_timeout_minutes: 30
+  stars:
+    enabled: true
+    rate_per_rub: 1.0
+  platega:
+    enabled: true
+    base_url: "https://app.platega.io"
+    merchant_id: "..."
+    secret: "..."
+  anore:
+    enabled: true
+    base_url: "https://api.anore.cc/v1"
+    api_key: "..."
+    secret_key: "..."
+    webhook_secret: "..."
+
+tariffs:
+  monthly:
+    title: "1 Month"
+    duration_hours: 720
+    price_rub: 500
+    description: "VPN access for 30 days"
+    product: "vpn"
+    traffic_gb: 0
+
+vpn:
+  delivery_mode: "remnawave"
+  key_prefix: "vpn"
+  remnawave:
+    enabled: true
+    base_url: "https://panel.example.com"
+    api_token: "..."
+    traffic_limit_bytes: 10737418240
+    traffic_limit_strategy: "NO_RESET"
+    internal_squad_uuids: ["uuid1"]
+    external_squad_uuid: "uuid2"
+    user_tag: "regular"
+    username_prefix: "vpn"
+
+aggregator:
+  enabled: true
+  public_base_url: "https://sub.example.com"
+  listen_host: "0.0.0.0"
+  listen_port: 8088
+  auto_select: true
+
+required_channels:
+  - chat_id: -100123456789
+    url: "https://t.me/channel"
+```
+
+### 11.12 Известные ограничения legacy
+
+| Ограничение | Описание |
+| --- | --- |
+| SQLite | Нет параллельного доступа, нет транзакций уровня PostgreSQL |
+| Нет outbox | Платёжные операции выполняются синхронно в HTTP-обработчике |
+| Нет идемпотентности | Повтор webhook-а может создать дубликат проводки |
+| Нет state machine | Статусы invoice/подписки неявные, переходы не ограничены |
+| Нет audit log | Действия администратора не логируются |
+| Нет RBAC | Админские права — только allowlist по Telegram ID |
+| Файловая конфигурация | Тарифы, каналы, настройки хранятся в YAML, не в БД |
+| Нет API-контракта | Нет OpenAPI, нет contract tests |
+| Нет health checks | Нет `/healthz`/`/readyz` |
+| Монолит | Все компоненты в одном процессе |
+
+## 12. Тестирование
 
 - [ ] Unit: доменные правила, state machine, цены, реферальные расчёты, промокоды, статусы счёта и подписки.
 - [ ] Repository: PostgreSQL tests for constraints and transactions.
@@ -357,7 +1125,300 @@ docs/
 - [ ] Load: целевые проверки на burst Telegram updates, webhook-и и массовую рассылку до production запуска.
 - [ ] Manual acceptance: мобильные Telegram iOS/Android, desktop Telegram, современные браузеры, RU/EN, light/dark theme.
 
-## 12. Этапы реализации
+## 13. Установка и развёртывание
+
+### 13.1 Сценарий установки
+
+Установка выполняется одной командой на чистый сервер:
+
+```bash
+sudo sh setup.sh
+```
+
+Скрипт:
+1. Скачивает `deploy/` из GitHub (docker-compose.yml, миграции, скрипты)
+2. Создаёт структуру директорий
+3. Генерирует `postgres_password` через openssl
+4. Создаёт `.env` с портами и секретами
+5. Запускает `docker compose pull && docker compose up -d`
+
+### 13.2 Структура на сервере
+
+```text
+/opt/vpn-bot-v2/
+  docker-compose.yml
+  .env                          # secrets + порты
+  db/
+    init/
+      001_baseline.sql          # схема P0
+    migrations/
+      manifest.txt
+      *.sql
+  data/
+    postgres/                   # volume
+    redis/                      # volume
+  backups/
+  update.sh
+  rollback.sh
+  backup-postgres.sh
+  restore-rehearsal.sh
+  apply-runtime-settings.sh
+  host-nginx.example.conf
+```
+
+### 13.3 Автоинициализация БД
+
+При старте API выполняется проверка:
+
+```text
+startup()
+  ├─ SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users')
+  │   ├─ true → пропуск
+  │   └─ false → APPLY 001_baseline.sql
+  ├─ SELECT EXISTS (SELECT 1 FROM app_settings WHERE key = 'trial_settings')
+  │   ├─ true → пропуск
+  │   └─ false → INSERT trial_settings (72ч, 10 ГБ)
+  ├─ SELECT EXISTS (SELECT 1 FROM app_settings WHERE key = 'referral_settings')
+  │   ├─ true → пропуск
+  │   └─ false → INSERT referral_settings (10%)
+  └─ bootstrap admin:
+      ├─ ADMIN_TELEGRAM_IDS из .env
+      ├─ если пользователь с таким telegram_user_id нет → создать с ролью admin
+      └─ если есть → пропуск
+```
+
+### 13.4 Отказ от шифрования в БД
+
+- **Не шифровать:** `vpn_accounts.access_url` хранится открытым текстом
+- **Не шифровать:** платёжные секреты хранятся в `app_secrets` открытым текстом (доступ только к PostgreSQL)
+- **APPLICATION_ENCRYPTION_KEY** — удаляется из `.env` и кода
+- Причина: шифрование на уровне приложения добавляет сложность без реальной выгоды, если PostgreSQL доступен только из внутренней сети
+
+### 13.5 Архитектура сервисов
+
+| Сервис | Порт (host) | Назначение |
+| --- | --- | --- |
+| `api` | 18080 | REST API для Mini App и админки |
+| `telegram-bot` | — | Telegram polling/webhook (внутренний) |
+| `billing-worker` | — | Reconciliation invoices (внутренний) |
+| `provisioning-worker` | — | Remnawave + outbox (внутренний) |
+| `notification-worker` | — | Доставка уведомлений (внутренний) |
+| `admin-web` | 18082 | SPA админки (static files) |
+| `mini-app-web` | 18081 | SPA Mini App (static files) |
+| `postgres` | 127.0.0.1:5432 | PostgreSQL |
+| `redis` | 127.0.0.1:6379 | Redis |
+
+### 13.6 Reverse proxy (nginx/caddy)
+
+Пользователь самостоятельно настраивает reverse proxy с TLS (nginx, caddy и т.д.) на основе примера ниже:
+
+```nginx
+# admin.example.com → admin panel + API
+server {
+    listen 443 ssl http2;
+    server_name admin.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/admin.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:18082;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:18080;
+    }
+}
+
+# app.example.com → mini app + API
+server {
+    listen 443 ssl http2;
+    server_name app.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:18081;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:18080;
+    }
+}
+
+# landing.example.com → landing page
+server {
+    listen 443 ssl http2;
+    server_name landing.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:18084;
+    }
+}
+```
+
+### 13.7 Первичная настройка (first-run)
+
+После установки и настройки rproxy пользователь:
+
+1. Заходит в админку по `https://admin.example.com`
+2. Создаёт первого root-администратора (полные права)
+3. Проходит пошаговую настройку:
+
+#### Шаг 1: Сервер и домены
+
+| Сервис | Описание | Локальный порт | Публичный хост |
+| --- | --- | --- | --- |
+| API | REST API для Mini App и админки | 18080 | `api.example.com` |
+| Admin Panel | SPA админки | 18082 | `admin.example.com` |
+| Mini App | SPA Mini App в Telegram | 18081 | `app.example.com` |
+| Landing | Лендинг страница | 18084 | `landing.example.com` |
+| Subscription Aggregator | Страница подписки / VPN конфиги | 18085 | `sub.example.com` |
+| Telegram Webhook | Webhook URL (опционально, если не polling) | 18083 | `hook.example.com` |
+
+- **Кнопка «Сохранить»** — перезапускает контейнеры
+- Все настройки (токены, секреты, тарифы) хранятся только в БД, не в `.env`
+
+#### Шаг 2: Telegram Bot
+
+| Параметр | Описание |
+| --- | --- |
+| Bot Token | Токен от @BotFather |
+| Bot Username | Получается автоматически из Bot API |
+| Webhook URL | Публичный адрес для Telegram (заполняется автоматически из домена) |
+
+> **Роль в боте:** Все пользователи равны. Роль admin — только в админке. Админом становится тот, у кого есть учётная запись в админке с ролью root или admin.
+
+Сохраняются в `app_secrets` (только в БД, не в `.env`).
+
+#### Шаг 3: Remnawave (VPN провайдер)
+
+| Параметр | Описание |
+| --- | --- |
+| API URL | `https://remnawave.example.com` |
+| API Token | Bearer token для авторизации |
+| Squad UUID | UUID сквада, который выдаётся пользователям |
+
+- **Squad UUID** — пользователи попадают в указанный сквад при выдаче подписки
+- **Агрегатор** — модифицирует запрос/ответ Remnawave для совместимости с VPN-клиентом (трансформация формата, добавление/уборка полей)
+- Сохраняются в `app_secrets` (только в БД, не в `.env`)
+
+#### Шаг 4: Платёжные системы
+
+Модульный принцип: каждый провайдер — отдельный блок, который можно включить/выключить.
+
+| Провайдер | Параметры | По умолчанию |
+| --- | --- | --- |
+| Crypto Pay | Bot Token | откл. |
+| Telegram Stars | Bot Token (общий с Telegram Bot) | откл. |
+| Platega | Shop ID, Secret Key | откл. |
+| Anore | API Key, Secret Key | откл. |
+
+- Каждый провайдер имеет on/off toggle
+- Секреты вводятся через админку, хранятся только в `app_secrets` (БД)
+- При отображении в админке — маскируются (`****`), при редактировании — в открытом виде
+- Добавление нового провайдера: создать модуль в коде, подключить
+
+#### Шаг 5: Тарифы
+
+Два типа тарифов:
+
+**1. Подписка (основная)**
+
+| Параметр | Описание |
+| --- | --- |
+| Название | Отображаемое имя |
+| Длительность | Срок действия (дни) |
+| Трафик | Объём трафика (ГБ), 0 = без ограничений |
+| Цена | Стоимость в рублях |
+| Статус | Активен / Неактивен |
+| Порядок сортировки | Порядок отображения в боте |
+
+**2. Докупка трафика**
+
+| Параметр | Описание |
+| --- | --- |
+| Название | Отображаемое имя |
+| Трафик | Объём докупаемого трафика (ГБ) |
+| Цена | Стоимость в рублях |
+| Статус | Активен / Неактивен |
+
+- Любой тариф можно оплатить любым активным платёжным провайдером
+
+#### Шаг 6: Уведомления и алерты
+
+Места доставки уведомлений — чаты/группы/ЛС, куда отправляются уведомления.
+
+| Место | Тип | Описание |
+| --- | --- | --- |
+| Chat ID | int | ID чата/группы/канала |
+| Topic ID | int, nullable | ID топика (для супергрупп с включёнными темами) |
+| Тип уведомлений | multiselect | Какие уведомления сюда отправляются |
+
+Типы уведомлений:
+  - О платежах (успех/ошибка)
+  - О Remnawave (недоступна, ошибка provision)
+  - О платёжных провайдерах (недоступен, ошибка webhook)
+  - Ежедневный отчёт
+  - О трафике (мало осталось)
+  - О подписках (истекает)
+  - Аудит (важные действия)
+
+При добавлении места:
+  1. Ввести Chat ID
+  2. Если группа с топиками — ввести Topic ID (опционально)
+  3. Выбрать какие уведомления сюда отправляются
+  4. Тестовое уведомление для проверки
+
+- Сохраняются в `notification_targets` (БД)
+- По умолчанию: ни одно место не настроено
+
+После сохранения:
+- Перезапускаются затронутые контейнеры через `docker compose up -d`
+- API автоматически обновляет webhook URL в Telegram (если настроен)
+- Бот и платёжные системы начинают работать
+
+### 13.8 Обновление
+
+```bash
+cd /opt/vpn-bot-v2
+sudo ./update.sh
+```
+
+Скрипт:
+1. Определяет текущий SHA из running container
+2. Делает `docker compose pull`
+3. Применяет миграции (если есть новые)
+4. Делает `docker compose up -d --remove-orphans`
+5. Проверяет health API
+
+### 13.9 Откат
+
+```bash
+cd /opt/vpn-bot-v2
+sudo ./rollback.sh <previous-sha>
+```
+
+Откат меняет только image tags, не удаляет volume.
+
+### 13.10 Бэкап и восстановление
+
+```bash
+# Бэкап
+sudo ./backup-postgres.sh
+
+# Восстановление (в отдельный стенд)
+sudo ./restore-rehearsal.sh
+```
+
+Политика бэкапов:
+  ├─ частота: раз в день (cron, 03:00 MSK)
+  ├─ хранилище: локальная папка `/opt/vpn-bot-v2/backups/`
+  ├─ retention: последние 3 версии (старые удаляются автоматически)
+  ├─ формат: PostgreSQL custom-format dump (pg_dump -Fc)
+  ├─ именование: `vpn_bot_YYYYMMDD_HHMMSS.dump`
+  ├─ проверка целостности: pg_restore --list после создания
+  └─ будущее: S3 (Яндекс) для off-site хранения
+
+## 14. Этапы реализации
 
 ### Этап 0. Discovery и решения
 
@@ -415,7 +1476,7 @@ docs/
 - [ ] Устранить наблюдаемые узкие места, сократить технический долг, обновить документацию и провести postmortem запуска.
 - [ ] Архивировать legacy-инфраструктуру отдельно по её собственной политике хранения данных; v2 от неё не зависит.
 
-## 13. Риски и решения до начала разработки
+## 15. Риски и решения до начала разработки
 
 | Риск | Митигирование |
 | --- | --- |
@@ -427,7 +1488,7 @@ docs/
 | Недоступность Telegram/платёжного провайдера | очереди, retries с backoff, graceful degradation, операторские runbooks |
 | Ошибка первичной настройки production | first-run checklist, staging rehearsal, immutable образ, backup/restore rehearsal и rollback сервисов по SHA |
 
-## 14. Definition of Done для первого production-релиза
+## 16. Definition of Done для первого production-релиза
 
 - [ ] Все P0-сценарии реализованы, задокументированы и проходят automated e2e tests.
 - [ ] Чистая инсталляция проходит first-run checklist без зависимости от legacy-данных или конфигурации.

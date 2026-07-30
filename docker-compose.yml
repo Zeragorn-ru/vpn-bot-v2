@@ -38,7 +38,7 @@ services:
         BINARY: vpn-api
     env_file: ${ENV_FILE:-.env}
     ports:
-      - "0.0.0.0:${API_HOST_PORT:-18080}:8080"
+      - "127.0.0.1:${API_HOST_PORT:-18080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,7 +99,7 @@ services:
     build:
       context: ./web/mini-app
     ports:
-      - "0.0.0.0:${MINI_APP_HOST_PORT:-18081}:80"
+      - "127.0.0.1:${MINI_APP_HOST_PORT:-18081}:80"
     depends_on:
       api:
         condition: service_healthy
@@ -109,7 +109,7 @@ services:
     build:
       context: ./web/admin
     ports:
-      - "0.0.0.0:${ADMIN_WEB_HOST_PORT:-18082}:80"
+      - "127.0.0.1:${ADMIN_WEB_HOST_PORT:-18082}:80"
     depends_on:
       api:
         condition: service_healthy

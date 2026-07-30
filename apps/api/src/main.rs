@@ -695,7 +695,7 @@ async fn main() -> Result<()> {
         .await
         .context("database connection failed")?;
 
-    let secrets_map = load_app_secrets_from_db(&database)
+    let secrets_map = load_app_secrets_from_db(&database, &encryption_key)
         .await
         .unwrap_or_default();
 
@@ -704,16 +704,6 @@ async fn main() -> Result<()> {
         .filter(|s| !s.is_empty())
         .cloned()
         .unwrap_or(telegram_bot_token);
-
-    let encryption_key_bytes = secrets_map
-        .get("APPLICATION_ENCRYPTION_KEY")
-        .filter(|s| !s.is_empty())
-        .and_then(|encoded| {
-            let bytes = STANDARD.decode(encoded).ok()?;
-            let arr: [u8; 32] = bytes.try_into().ok()?;
-            Some(arr)
-        })
-        .unwrap_or(encryption_key);
 
     ensure_trial_settings(&database)
         .await
@@ -734,7 +724,7 @@ async fn main() -> Result<()> {
         database,
         redis: redis::Client::open(redis_url).context("REDIS_URL is invalid")?,
         telegram_bot_token: Arc::from(tg_token),
-        encryption_key: Arc::new(encryption_key_bytes),
+        encryption_key: Arc::new(encryption_key),
         bootstrap_admin_telegram_ids: Arc::new(load_bootstrap_admin_telegram_ids()?),
         payment_providers: build_payment_providers(&secrets_map)?,
         subscription_public_url: Arc::from(subscription_public_url),
@@ -1837,11 +1827,6 @@ const KNOWN_SECRETS: &[(&str, &str, &str)] = &[
         "Токен для Bot API. Режим транспорта зависит от этого значения.",
     ),
     (
-        "APPLICATION_ENCRYPTION_KEY",
-        "Ключ шифрования",
-        "Base64 32-byte ключ AES-256-GCM. Смена ключа делает старые зашифрованные данные недоступными.",
-    ),
-    (
         "CRYPTO_PAY_TOKEN",
         "Crypto Pay токен",
         "API-токен Crypto Pay для приёма крипто-платежей.",
@@ -1864,13 +1849,19 @@ const KNOWN_SECRETS: &[(&str, &str, &str)] = &[
     ("ANORE_BASE_URL", "Anore API URL", "Базовый URL Anore API."),
 ];
 
-async fn load_app_secrets_from_db(database: &PgPool) -> Result<HashMap<String, String>> {
-    let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM app_secrets")
+async fn load_app_secrets_from_db(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+) -> Result<HashMap<String, String>> {
+    let rows: Vec<(String, Vec<u8>)> = sqlx::query_as("SELECT key, value FROM app_secrets")
         .fetch_all(database)
         .await?;
     let mut map = std::collections::HashMap::new();
     for (key, value) in rows {
-        map.insert(key, value);
+        map.insert(
+            key,
+            vpn_storage::decrypt_app_secret(encryption_key, &value)?,
+        );
     }
     Ok(map)
 }
@@ -1880,7 +1871,7 @@ async fn admin_secrets(
     headers: HeaderMap,
 ) -> Result<Json<AdminSecretsResponse>, ApiError> {
     authenticated_admin_id(&state, &headers).await?;
-    let db_secrets = load_app_secrets_from_db(&state.database)
+    let db_secrets = load_app_secrets_from_db(&state.database, &state.encryption_key)
         .await
         .unwrap_or_default();
     let items = KNOWN_SECRETS
@@ -1917,13 +1908,23 @@ async fn update_admin_secret(
             .await
             .map_err(database_error)?;
     } else {
+        let encrypted_value =
+            vpn_storage::encrypt_app_secret(&state.encryption_key, &request.value).map_err(
+                |_| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        "An unexpected error occurred.",
+                    )
+                },
+            )?;
         sqlx::query(
             "INSERT INTO app_secrets (key, value, updated_at)
              VALUES ($1, $2, now())
              ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()",
         )
         .bind(&request.key)
-        .bind(&request.value)
+        .bind(encrypted_value)
         .execute(&state.database)
         .await
         .map_err(database_error)?;
@@ -3562,7 +3563,10 @@ async fn payment_webhook(
 
     let invoice = sqlx::query_as::<_, InvoiceForFulfillment>(
         "SELECT id, user_id, purpose, status, currency_code, amount_minor, tariff_id
-         FROM invoices WHERE provider = $1 AND provider_invoice_id = $2 FOR UPDATE",
+         FROM invoices
+         WHERE provider = $1 AND provider_invoice_id = $2
+           AND (status <> 'pending' OR expires_at > now())
+         FOR UPDATE",
     )
     .bind(provider_code.as_str())
     .bind(&event.provider_invoice_id)

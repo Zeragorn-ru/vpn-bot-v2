@@ -1,3 +1,5 @@
 002_admin_accounts.sql
 003_required_channels.sql
 004_app_secrets.sql
+005_encrypt_app_secrets.sql
+006_notification_idempotency.sql

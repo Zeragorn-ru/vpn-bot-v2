@@ -2523,6 +2523,10 @@ dependencies = [
 name = "vpn-storage"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "base64",
+ "rand 0.8.7",
  "serde_json",
  "sqlx",
  "tokio",

@@ -10,7 +10,7 @@ use vpn_integrations::{
     PaymentProviderSettings, ProviderPaymentStatus, TelegramStarsConfig,
 };
 use vpn_observability::init_tracing;
-use vpn_storage::{InvoiceForFulfillment, connect};
+use vpn_storage::{InvoiceForFulfillment, connect, decode_encryption_key, load_app_secret};
 
 #[derive(Debug, FromRow)]
 struct PendingInvoice {
@@ -32,7 +32,11 @@ async fn main() -> Result<()> {
     let pool = connect(&database_url)
         .await
         .context("database connection failed")?;
-    let providers = Arc::new(load_configured_providers(&pool).await?);
+    let encryption_key = decode_encryption_key(
+        &env::var("APPLICATION_ENCRYPTION_KEY")
+            .context("APPLICATION_ENCRYPTION_KEY is required")?,
+    )?;
+    let providers = Arc::new(load_configured_providers(&pool, &encryption_key).await?);
     info!(providers = ?providers.enabled_codes(), "billing provider registry initialized");
 
     info!("billing worker started");
@@ -41,6 +45,9 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                if let Err(error) = expire_invoices(&pool).await {
+                    error!(%error, "invoice expiration sweep failed");
+                }
                 if let Err(error) = reconcile_one_invoice(&pool, &providers).await {
                     error!(%error, "payment reconciliation failed");
                 }
@@ -52,6 +59,16 @@ async fn main() -> Result<()> {
         }
     }
     info!("billing worker stopped");
+    Ok(())
+}
+
+async fn expire_invoices(pool: &PgPool) -> Result<()> {
+    sqlx::query(
+        "UPDATE invoices SET status = 'expired', updated_at = now()
+         WHERE status = 'pending' AND expires_at <= now()",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -122,10 +139,12 @@ async fn settle_paid_invoice(
     Ok(())
 }
 
-async fn load_secret_from_db(database: &PgPool, key: &str) -> Option<String> {
-    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
-        .bind(key)
-        .fetch_optional(database)
+async fn load_secret_from_db(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+    key: &str,
+) -> Option<String> {
+    load_app_secret(database, encryption_key, key)
         .await
         .ok()
         .flatten()
@@ -139,15 +158,18 @@ fn env_or_db(env_key: &str, db_value: Option<String>) -> Option<String> {
     }
 }
 
-async fn load_configured_providers(database: &PgPool) -> Result<PaymentProviderRegistry> {
+async fn load_configured_providers(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+) -> Result<PaymentProviderRegistry> {
     let crypto_pay_token = env_or_db(
         "CRYPTO_PAY_TOKEN",
-        load_secret_from_db(database, "CRYPTO_PAY_TOKEN").await,
+        load_secret_from_db(database, encryption_key, "CRYPTO_PAY_TOKEN").await,
     )
     .filter(|token| token != "replace-me");
     let crypto_pay_base_url = env_or_db(
         "CRYPTO_PAY_BASE_URL",
-        load_secret_from_db(database, "CRYPTO_PAY_BASE_URL").await,
+        load_secret_from_db(database, encryption_key, "CRYPTO_PAY_BASE_URL").await,
     )
     .unwrap_or_else(|| "https://pay.crypt.bot/api".to_owned());
     let crypto_pay = crypto_pay_token.map(|api_token| CryptoPayConfig {
@@ -156,15 +178,15 @@ async fn load_configured_providers(database: &PgPool) -> Result<PaymentProviderR
     });
     let anore_key = env_or_db(
         "ANORE_API_KEY",
-        load_secret_from_db(database, "ANORE_API_KEY").await,
+        load_secret_from_db(database, encryption_key, "ANORE_API_KEY").await,
     );
     let anore_secret = env_or_db(
         "ANORE_SIGNING_SECRET",
-        load_secret_from_db(database, "ANORE_SIGNING_SECRET").await,
+        load_secret_from_db(database, encryption_key, "ANORE_SIGNING_SECRET").await,
     );
     let anore_base_url = env_or_db(
         "ANORE_BASE_URL",
-        load_secret_from_db(database, "ANORE_BASE_URL").await,
+        load_secret_from_db(database, encryption_key, "ANORE_BASE_URL").await,
     )
     .unwrap_or_else(|| "https://api.anore.cc/v1".to_owned());
     let anore = match (anore_key, anore_secret) {
@@ -182,7 +204,7 @@ async fn load_configured_providers(database: &PgPool) -> Result<PaymentProviderR
     };
     let telegram_stars = env_or_db(
         "TELEGRAM_BOT_TOKEN",
-        load_secret_from_db(database, "TELEGRAM_BOT_TOKEN").await,
+        load_secret_from_db(database, encryption_key, "TELEGRAM_BOT_TOKEN").await,
     )
     .filter(|token| token != "replace-me")
     .map(|bot_token| TelegramStarsConfig { bot_token });

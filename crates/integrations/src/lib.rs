@@ -3,10 +3,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use hmac::Mac;
 use http::HeaderMap;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 use vpn_domain::Money;
@@ -283,10 +285,52 @@ impl PaymentProvider for CryptoPayProvider {
 
     fn verify_webhook(
         &self,
-        _headers: &HeaderMap,
-        _raw_body: &[u8],
+        headers: &HeaderMap,
+        raw_body: &[u8],
     ) -> Result<VerifiedPaymentEvent, IntegrationError> {
-        Err(IntegrationError::UnsupportedWebhook)
+        let signature = headers
+            .get("crypto-pay-api-signature")
+            .or_else(|| headers.get("Crypto-Pay-API-Signature"))
+            .and_then(|v| v.to_str().ok())
+            .ok_or(IntegrationError::InvalidWebhookSignature)?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(self.config.api_token.as_bytes());
+        let secret = hasher.finalize();
+
+        let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&secret)
+            .map_err(|_| IntegrationError::InvalidWebhookSignature)?;
+        mac.update(raw_body);
+        let expected = hex::encode(mac.finalize().into_bytes());
+
+        if !constant_time_equal(signature.as_bytes(), expected.as_bytes()) {
+            return Err(IntegrationError::InvalidWebhookSignature);
+        }
+
+        let update: CryptoPayWebhookUpdate =
+            serde_json::from_slice(raw_body).map_err(|_| IntegrationError::InvalidResponse)?;
+        if update.update_type != "invoice_paid" {
+            return Err(IntegrationError::UnsupportedWebhook);
+        }
+        if (Utc::now() - update.request_date).abs() > ChronoDuration::minutes(5) {
+            return Err(IntegrationError::InvalidResponse);
+        }
+
+        let invoice = update.payload;
+        if invoice.fiat.as_deref() != Some("RUB") {
+            return Err(IntegrationError::UnsupportedCurrency);
+        }
+        let amount_minor = parse_rub_minor(&invoice.amount)?;
+        let provider_event_id = hex::encode(Sha256::digest(raw_body));
+
+        Ok(VerifiedPaymentEvent {
+            provider_event_id,
+            provider_invoice_id: invoice.invoice_id.to_string(),
+            provider_payment_id: Some(invoice.invoice_id.to_string()),
+            status: normalize_status(&invoice.status),
+            amount_minor,
+            currency_code: "RUB".to_owned(),
+        })
     }
 }
 
@@ -530,7 +574,16 @@ fn rub_decimal(amount: Money) -> String {
 }
 
 fn parse_rub_minor(value: &str) -> Result<i64, IntegrationError> {
+    if value.is_empty() || value.starts_with('+') || value.starts_with('-') {
+        return Err(IntegrationError::InvalidResponse);
+    }
     let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(IntegrationError::InvalidResponse);
+    }
     let whole = whole
         .parse::<i64>()
         .map_err(|_| IntegrationError::InvalidResponse)?;
@@ -607,6 +660,25 @@ struct CryptoPayInvoice {
     mini_app_invoice_url: Option<String>,
     web_app_invoice_url: Option<String>,
     expiration_date: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct CryptoPayWebhookUpdate {
+    #[allow(dead_code)]
+    update_id: i64,
+    request_date: DateTime<Utc>,
+    update_type: String,
+    payload: CryptoPayWebhookInvoice,
+}
+
+#[derive(Debug, Deserialize)]
+struct CryptoPayWebhookInvoice {
+    invoice_id: i64,
+    status: String,
+    #[serde(deserialize_with = "deserialize_amount")]
+    amount: String,
+    fiat: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1040,7 +1112,9 @@ mod tests {
         AnoreConfig, AnoreProvider, PaymentProvider, PaymentProviderCode, PaymentProviderRegistry,
         ProviderPaymentStatus, hmac_sha256_hex,
     };
+    use hmac::Mac;
     use http::{HeaderMap, HeaderValue};
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn registry_reports_enabled_provider_codes_in_a_stable_order() {
@@ -1093,5 +1167,99 @@ mod tests {
         assert_eq!(event.provider_invoice_id, "payment-1");
         assert_eq!(event.status, ProviderPaymentStatus::Paid);
         assert_eq!(event.amount_minor, 29_900);
+    }
+
+    #[test]
+    fn cryptopay_verifies_a_signed_webhook() {
+        use super::{CryptoPayConfig, CryptoPayProvider};
+        use chrono::Utc;
+        let api_token = "test-token-12345";
+        let provider = CryptoPayProvider::new(CryptoPayConfig {
+            api_token: api_token.to_owned(),
+            base_url: "https://example.invalid".to_owned(),
+        })
+        .unwrap();
+
+        let body = format!(
+            r#"{{"update_id":123,"request_date":"{}","update_type":"invoice_paid","payload":{{"invoice_id":456,"status":"paid","amount":"500.00","fiat":"RUB"}}}}"#,
+            Utc::now().to_rfc3339()
+        );
+
+        let mut hasher = Sha256::new();
+        hasher.update(api_token.as_bytes());
+        let secret = hasher.finalize();
+        let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+        mac.update(body.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Crypto-Pay-API-Signature",
+            HeaderValue::from_str(&signature).unwrap(),
+        );
+
+        let event = provider.verify_webhook(&headers, body.as_bytes()).unwrap();
+        assert_ne!(event.provider_event_id, "123");
+        assert_eq!(event.provider_invoice_id, "456");
+        assert_eq!(event.status, ProviderPaymentStatus::Paid);
+        assert_eq!(event.amount_minor, 50000);
+        assert_eq!(event.currency_code, "RUB");
+    }
+
+    #[test]
+    fn cryptopay_rejects_stale_webhooks() {
+        use super::{CryptoPayConfig, CryptoPayProvider};
+        use chrono::{Duration, Utc};
+
+        let api_token = "test-token-12345";
+        let provider = CryptoPayProvider::new(CryptoPayConfig {
+            api_token: api_token.to_owned(),
+            base_url: "https://example.invalid".to_owned(),
+        })
+        .unwrap();
+        let body = format!(
+            r#"{{"update_id":123,"request_date":"{}","update_type":"invoice_paid","payload":{{"invoice_id":456,"status":"paid","amount":"500.00","fiat":"RUB"}}}}"#,
+            (Utc::now() - Duration::minutes(6)).to_rfc3339()
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(api_token.as_bytes());
+        let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&hasher.finalize()).unwrap();
+        mac.update(body.as_bytes());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "crypto-pay-api-signature",
+            HeaderValue::from_str(&hex::encode(mac.finalize().into_bytes())).unwrap(),
+        );
+
+        assert!(provider.verify_webhook(&headers, body.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn cryptopay_rejects_unknown_update_type_and_non_rub() {
+        use super::{CryptoPayConfig, CryptoPayProvider};
+        use chrono::Utc;
+
+        let api_token = "test-token-12345";
+        let provider = CryptoPayProvider::new(CryptoPayConfig {
+            api_token: api_token.to_owned(),
+            base_url: "https://example.invalid".to_owned(),
+        })
+        .unwrap();
+        for (update_type, fiat) in [("invoice_created", "RUB"), ("invoice_paid", "USD")] {
+            let body = format!(
+                r#"{{"update_id":123,"request_date":"{}","update_type":"{update_type}","payload":{{"invoice_id":456,"status":"paid","amount":"500.00","fiat":"{fiat}"}}}}"#,
+                Utc::now().to_rfc3339()
+            );
+            let mut hasher = Sha256::new();
+            hasher.update(api_token.as_bytes());
+            let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&hasher.finalize()).unwrap();
+            mac.update(body.as_bytes());
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "crypto-pay-api-signature",
+                HeaderValue::from_str(&hex::encode(mac.finalize().into_bytes())).unwrap(),
+            );
+            assert!(provider.verify_webhook(&headers, body.as_bytes()).is_err());
+        }
     }
 }

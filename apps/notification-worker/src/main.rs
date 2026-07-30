@@ -7,7 +7,7 @@ use tokio::time::{MissedTickBehavior, interval};
 use tracing::{error, info};
 use uuid::Uuid;
 use vpn_observability::init_tracing;
-use vpn_storage::connect;
+use vpn_storage::{connect, decode_encryption_key, load_app_secret};
 
 #[derive(Debug, FromRow)]
 struct PendingNotification {
@@ -18,10 +18,12 @@ struct PendingNotification {
     payload: Value,
 }
 
-async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
-    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
-        .bind(key)
-        .fetch_optional(database)
+async fn load_secret_from_db(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+    key: &str,
+) -> Result<String> {
+    load_app_secret(database, encryption_key, key)
         .await?
         .filter(|value| !value.is_empty())
         .context(format!("secret {key} not found in app_secrets"))
@@ -35,9 +37,10 @@ async fn main() -> Result<()> {
     let pool = connect(&database_url)
         .await
         .context("database connection failed")?;
+    let encryption_key = decode_encryption_key(&env::var("APPLICATION_ENCRYPTION_KEY")?)?;
     let telegram_bot_token = match env::var("TELEGRAM_BOT_TOKEN") {
         Ok(value) if !value.is_empty() => value,
-        _ => load_secret_from_db(&pool, "TELEGRAM_BOT_TOKEN")
+        _ => load_secret_from_db(&pool, &encryption_key, "TELEGRAM_BOT_TOKEN")
             .await
             .context("TELEGRAM_BOT_TOKEN is required (set in env or app_secrets)")?,
     };
@@ -99,10 +102,12 @@ async fn materialize_one_notification(pool: &PgPool) -> Result<()> {
     .fetch_one(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO notifications (id, user_id, kind, locale, payload)
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO notifications (id, source_event_id, user_id, kind, locale, payload)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (source_event_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())
+    .bind(event_id)
     .bind(user_id)
     .bind(kind)
     .bind(locale)

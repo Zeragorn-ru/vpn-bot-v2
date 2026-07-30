@@ -1,6 +1,12 @@
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use rand::RngCore;
 use serde_json::json;
 use sqlx::{FromRow, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 use uuid::Uuid;
+
+const SECRET_NONCE_LENGTH: usize = 12;
 
 /// Opens the application's `PostgreSQL` pool.
 ///
@@ -17,6 +23,83 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
 pub async fn is_ready(pool: &PgPool) -> bool {
     sqlx::query("SELECT 1").execute(pool).await.is_ok()
+}
+
+/// Decodes the root key used for application-managed encrypted data.
+///
+/// # Errors
+///
+/// Returns an error when the value is not base64 or is not exactly 32 bytes.
+pub fn decode_encryption_key(encoded: &str) -> Result<[u8; 32]> {
+    let bytes = STANDARD
+        .decode(encoded)
+        .context("APPLICATION_ENCRYPTION_KEY must be base64")?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("APPLICATION_ENCRYPTION_KEY must decode to 32 bytes"))
+}
+
+/// Encrypts a secret for storage. The root key must remain outside `PostgreSQL`.
+///
+/// # Errors
+///
+/// Returns an error when authenticated encryption fails.
+///
+/// # Panics
+///
+/// Panics only if the fixed-size AES-256 key cannot be accepted by the cipher.
+pub fn encrypt_app_secret(key: &[u8; 32], plaintext: &str) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new_from_slice(key).expect("AES-256 uses a 32-byte key");
+    let mut nonce = [0_u8; SECRET_NONCE_LENGTH];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext.as_bytes())
+        .map_err(|_| anyhow::anyhow!("secret encryption failed"))?;
+    let mut encrypted = Vec::with_capacity(nonce.len() + ciphertext.len());
+    encrypted.extend_from_slice(&nonce);
+    encrypted.extend_from_slice(&ciphertext);
+    Ok(encrypted)
+}
+
+/// Loads and decrypts one application secret.
+///
+/// # Errors
+///
+/// Returns an error when the database query or decryption fails.
+pub async fn load_app_secret(
+    pool: &PgPool,
+    key: &[u8; 32],
+    secret_key: &str,
+) -> Result<Option<String>> {
+    let encrypted =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM app_secrets WHERE key = $1")
+            .bind(secret_key)
+            .fetch_optional(pool)
+            .await?;
+    encrypted
+        .map(|value| decrypt_app_secret(key, &value))
+        .transpose()
+}
+
+/// Decrypts an application secret loaded from `PostgreSQL`.
+///
+/// # Errors
+///
+/// Returns an error when the ciphertext is truncated, authentication fails, or
+/// the decrypted value is not valid UTF-8.
+///
+/// # Panics
+///
+/// Panics only if the fixed-size AES-256 key cannot be accepted by the cipher.
+pub fn decrypt_app_secret(key: &[u8; 32], encrypted: &[u8]) -> Result<String> {
+    let (nonce, ciphertext) = encrypted
+        .split_at_checked(SECRET_NONCE_LENGTH)
+        .context("encrypted secret is truncated")?;
+    let cipher = Aes256Gcm::new_from_slice(key).expect("AES-256 uses a 32-byte key");
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|_| anyhow::anyhow!("secret decryption failed"))?;
+    String::from_utf8(plaintext).context("decrypted secret is not UTF-8")
 }
 
 #[derive(Debug, FromRow)]

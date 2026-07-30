@@ -13,7 +13,7 @@ use uuid::Uuid;
 use vpn_domain::DEFAULT_TRIAL_DURATION_SECONDS;
 use vpn_integrations::{ProvisionRequest, RemnawaveConfig, RemnawaveProvider, VpnProvider};
 use vpn_observability::init_tracing;
-use vpn_storage::connect;
+use vpn_storage::{connect, load_app_secret};
 
 const OUTBOX_LOCK_LEASE_SECONDS: i64 = 300;
 
@@ -27,10 +27,12 @@ struct PendingSubscription {
     current_expiry: Option<DateTime<Utc>>,
 }
 
-async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
-    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
-        .bind(key)
-        .fetch_optional(database)
+async fn load_secret_from_db(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+    key: &str,
+) -> Result<String> {
+    load_app_secret(database, encryption_key, key)
         .await?
         .filter(|value| !value.is_empty())
         .context(format!("secret {key} not found in app_secrets"))
@@ -66,7 +68,7 @@ async fn main() -> Result<()> {
     let pool = connect(&database_url)
         .await
         .context("database connection failed")?;
-    let provider = match load_remnawave_config(&pool).await {
+    let provider = match load_remnawave_config(&pool, &encryption_key).await {
         Ok(config) => Some(RemnawaveProvider::new(config)?),
         Err(error) => {
             error!(%error, "REMNAWAVE not configured, provisioning disabled");
@@ -465,31 +467,34 @@ async fn complete_provisioning(
     Ok(())
 }
 
-async fn load_remnawave_config(database: &PgPool) -> Result<RemnawaveConfig> {
+async fn load_remnawave_config(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+) -> Result<RemnawaveConfig> {
     let base_url = env_or_fallback(
         "REMNAWAVE_BASE_URL",
-        load_secret_from_db(database, "REMNAWAVE_BASE_URL")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_BASE_URL")
             .await
             .ok(),
         None,
     )?;
     let api_token = env_or_fallback(
         "REMNAWAVE_API_TOKEN",
-        load_secret_from_db(database, "REMNAWAVE_API_TOKEN")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_API_TOKEN")
             .await
             .ok(),
         None,
     )?;
     let internal_squad_uuids = env_or_fallback(
         "REMNAWAVE_INTERNAL_SQUAD_UUIDS",
-        load_secret_from_db(database, "REMNAWAVE_INTERNAL_SQUAD_UUIDS")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_INTERNAL_SQUAD_UUIDS")
             .await
             .ok(),
         Some(String::new()),
     )?;
     let external_squad_uuid = env_or_fallback(
         "REMNAWAVE_EXTERNAL_SQUAD_UUID",
-        load_secret_from_db(database, "REMNAWAVE_EXTERNAL_SQUAD_UUID")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_EXTERNAL_SQUAD_UUID")
             .await
             .ok(),
         None,
@@ -497,21 +502,21 @@ async fn load_remnawave_config(database: &PgPool) -> Result<RemnawaveConfig> {
     .ok();
     let traffic_limit_strategy = env_or_fallback(
         "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY",
-        load_secret_from_db(database, "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_TRAFFIC_LIMIT_STRATEGY")
             .await
             .ok(),
         Some("NO_RESET".to_owned()),
     )?;
     let user_tag = env_or_fallback(
         "REMNAWAVE_USER_TAG",
-        load_secret_from_db(database, "REMNAWAVE_USER_TAG")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_USER_TAG")
             .await
             .ok(),
         Some("PAID".to_owned()),
     )?;
     let username_prefix = env_or_fallback(
         "REMNAWAVE_USERNAME_PREFIX",
-        load_secret_from_db(database, "REMNAWAVE_USERNAME_PREFIX")
+        load_secret_from_db(database, encryption_key, "REMNAWAVE_USERNAME_PREFIX")
             .await
             .ok(),
         Some("vpn".to_owned()),

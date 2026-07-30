@@ -15,7 +15,9 @@ use tokio::time::sleep;
 use tracing::{error, info};
 use uuid::Uuid;
 use vpn_observability::init_tracing;
-use vpn_storage::{InvoiceForFulfillment, connect, fulfill_paid_invoice};
+use vpn_storage::{
+    InvoiceForFulfillment, connect, decode_encryption_key, fulfill_paid_invoice, load_app_secret,
+};
 
 const TELEGRAM_API_BASE_URL: &str = "https://api.telegram.org";
 
@@ -146,16 +148,17 @@ async fn main() -> Result<()> {
     let database = connect(&database_url)
         .await
         .context("database connection failed")?;
+    let encryption_key = decode_encryption_key(&env::var("APPLICATION_ENCRYPTION_KEY")?)?;
 
     let token = match env::var("TELEGRAM_BOT_TOKEN") {
         Ok(value) if !value.is_empty() => value,
-        _ => load_secret_from_db(&database, "TELEGRAM_BOT_TOKEN")
+        _ => load_secret_from_db(&database, &encryption_key, "TELEGRAM_BOT_TOKEN")
             .await
             .context("TELEGRAM_BOT_TOKEN is required (set in env or app_secrets)")?,
     };
     let mini_app_url = match env::var("MINI_APP_PUBLIC_URL") {
         Ok(value) if !value.is_empty() => value,
-        _ => match load_secret_from_db(&database, "MINI_APP_PUBLIC_URL").await {
+        _ => match load_secret_from_db(&database, &encryption_key, "MINI_APP_PUBLIC_URL").await {
             Ok(value) => value,
             Err(_) => load_public_setting(&database, "mini_app_url")
                 .await
@@ -173,7 +176,7 @@ async fn main() -> Result<()> {
         .filter(|value| !value.is_empty());
     let webhook_secret = match env::var("TELEGRAM_WEBHOOK_SECRET") {
         Ok(value) if !value.is_empty() => Some(Arc::from(value)),
-        _ => load_secret_from_db(&database, "TELEGRAM_WEBHOOK_SECRET")
+        _ => load_secret_from_db(&database, &encryption_key, "TELEGRAM_WEBHOOK_SECRET")
             .await
             .ok()
             .map(Arc::from),
@@ -236,10 +239,12 @@ async fn clear_restart_flag(database: &PgPool) -> Result<()> {
     Ok(())
 }
 
-async fn load_secret_from_db(database: &PgPool, key: &str) -> Result<String> {
-    sqlx::query_scalar::<_, String>("SELECT value FROM app_secrets WHERE key = $1")
-        .bind(key)
-        .fetch_optional(database)
+async fn load_secret_from_db(
+    database: &PgPool,
+    encryption_key: &[u8; 32],
+    key: &str,
+) -> Result<String> {
+    load_app_secret(database, encryption_key, key)
         .await?
         .filter(|value| !value.is_empty())
         .context(format!("secret {key} not found in app_secrets"))

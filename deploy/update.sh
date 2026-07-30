@@ -30,5 +30,32 @@ done
 ./apply-runtime-settings.sh
 docker compose --env-file .env -f docker-compose.yml pull
 docker compose --env-file .env -f docker-compose.yml up -d --remove-orphans
-docker compose --env-file .env -f docker-compose.yml exec -T api curl --fail http://127.0.0.1:8080/readyz
+
+deadline=$((SECONDS + 90))
+while :; do
+  all_running=1
+  unhealthy=0
+  for service in $(docker compose --env-file .env -f docker-compose.yml config --services); do
+    container=$(docker compose --env-file .env -f docker-compose.yml ps -q "$service")
+    [ -n "$container" ] || { all_running=0; continue; }
+    status=$(docker inspect -f '{{.State.Status}}' "$container")
+    health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")
+    [ "$status" = running ] || all_running=0
+    [ "$health" != unhealthy ] || unhealthy=1
+  done
+  if [ "$unhealthy" -eq 1 ]; then
+    echo "one or more services are unhealthy" >&2
+    docker compose --env-file .env -f docker-compose.yml ps
+    exit 1
+  fi
+  if [ "$all_running" -eq 1 ] && docker compose --env-file .env -f docker-compose.yml exec -T api curl --fail http://127.0.0.1:8080/readyz >/dev/null; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "release did not become healthy in time" >&2
+    docker compose --env-file .env -f docker-compose.yml ps
+    exit 1
+  fi
+  sleep 3
+done
 docker compose --env-file .env -f docker-compose.yml ps

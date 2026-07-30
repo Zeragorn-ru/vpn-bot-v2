@@ -22,6 +22,32 @@ if [ -n "${VPN_BOT_IMAGE_TAG:-}" ]; then
   export VPN_API_IMAGE VPN_TELEGRAM_BOT_IMAGE VPN_BILLING_WORKER_IMAGE VPN_PROVISIONING_WORKER_IMAGE VPN_NOTIFICATION_WORKER_IMAGE VPN_ADMIN_WEB_IMAGE VPN_MINI_APP_WEB_IMAGE
 fi
 
+telegram_transport=$(docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U vpn_bot -d vpn_bot -At -c "SELECT COALESCE(value->>'mode', 'polling') FROM app_settings WHERE key = 'telegram_transport_settings'" 2>/dev/null || true)
+telegram_token=${TELEGRAM_BOT_TOKEN:-}
+if [ -z "$telegram_token" ]; then
+  telegram_token=$(grep '^TELEGRAM_BOT_TOKEN=' .env 2>/dev/null | cut -d= -f2- || true)
+fi
+if [ -z "$telegram_token" ]; then
+  telegram_token=$(docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U vpn_bot -d vpn_bot -At -c "SELECT 1 FROM app_secrets WHERE key = 'TELEGRAM_BOT_TOKEN' LIMIT 1" 2>/dev/null || true)
+fi
+if [ -z "$telegram_token" ]; then
+  echo "TELEGRAM_BOT_TOKEN is missing: set it in .env or app_secrets before deploying" >&2
+  exit 78
+fi
+if [ "$telegram_transport" = webhook ]; then
+  webhook_secret=${TELEGRAM_WEBHOOK_SECRET:-}
+  if [ -z "$webhook_secret" ]; then
+    webhook_secret=$(grep '^TELEGRAM_WEBHOOK_SECRET=' .env 2>/dev/null | cut -d= -f2- || true)
+  fi
+  if [ -z "$webhook_secret" ]; then
+    webhook_secret=$(docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U vpn_bot -d vpn_bot -At -c "SELECT 1 FROM app_secrets WHERE key = 'TELEGRAM_WEBHOOK_SECRET' LIMIT 1" 2>/dev/null || true)
+  fi
+  if [ -z "$webhook_secret" ]; then
+    echo "TELEGRAM_WEBHOOK_SECRET is missing for webhook transport" >&2
+    exit 78
+  fi
+fi
+
 for migration in db/migrations/*.sql; do
   [ -f "$migration" ] || continue
   docker compose --env-file .env -f docker-compose.yml exec -T postgres \

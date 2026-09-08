@@ -1,0 +1,5 @@
+[allowlist]
+description = "Workspace-member path that triggers the generic-api-key heuristic"
+regexes = [
+  '''"crates/api-contracts",''',
+]

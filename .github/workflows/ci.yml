@@ -209,16 +209,48 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "install -d -m 0750 '$DEPLOY_PATH/deploy'"
-          tar --create --gzip --file - deploy | \
-            ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-              "tar --extract --gzip --file - -C '$DEPLOY_PATH'"
+          set -o pipefail
+          ssh_options=(-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+            -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
+            -o ServerAliveCountMax=3)
+          ssh_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$@"; then
+                return 0
+              fi
+              [ "$attempt" -eq 3 ] || sleep "$((attempt * 5))"
+            done
+            return 1
+          }
+          upload_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if tar --create --gzip --file - deploy | \
+                ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+                  "tar --extract --gzip --file - -C '$DEPLOY_PATH'"; then
+                return 0
+              fi
+              [ "$attempt" -eq 3 ] || sleep "$((attempt * 5))"
+            done
+            return 1
+          }
+          ssh_retry "install -d -m 0750 '$DEPLOY_PATH/deploy'"
+          upload_retry
       - name: Apply immutable release
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "cd '$DEPLOY_PATH' && chmod 750 deploy/update.sh deploy/rollback.sh deploy/backup-postgres.sh deploy/restore-rehearsal.sh deploy/apply-runtime-settings.sh && VPN_BOT_RELEASE='$RELEASE_SHA' deploy/update.sh"
+          ssh_options=(-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+            -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
+            -o ServerAliveCountMax=3)
+          for attempt in 1 2 3; do
+            if ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+              "cd '$DEPLOY_PATH' && chmod 750 deploy/update.sh deploy/rollback.sh deploy/backup-postgres.sh deploy/restore-rehearsal.sh deploy/apply-runtime-settings.sh && VPN_BOT_RELEASE='$RELEASE_SHA' deploy/update.sh"; then
+              exit 0
+            fi
+            [ "$attempt" -eq 3 ] || sleep "$((attempt * 5))"
+          done
+          exit 1

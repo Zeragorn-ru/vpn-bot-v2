@@ -1,87 +1,93 @@
 #!/usr/bin/env bash
-set -eu
+set -euo pipefail
 
-if [ -n "${VPN_BOT_IMAGE_TAG:-}" ]; then
-  case "$VPN_BOT_IMAGE_TAG" in
-    *[!A-Za-z0-9._-]* | "")
-      echo "release image tag contains unsupported characters" >&2
-      exit 64
-      ;;
-  esac
-  image_for_tag() {
-    image=$1
-    printf '%s:%s' "${image%:*}" "$VPN_BOT_IMAGE_TAG"
-  }
-  VPN_API_IMAGE=$(image_for_tag "$(grep '^VPN_API_IMAGE=' .env | cut -d= -f2-)")
-  VPN_TELEGRAM_BOT_IMAGE=$(image_for_tag "$(grep '^VPN_TELEGRAM_BOT_IMAGE=' .env | cut -d= -f2-)")
-  VPN_BILLING_WORKER_IMAGE=$(image_for_tag "$(grep '^VPN_BILLING_WORKER_IMAGE=' .env | cut -d= -f2-)")
-  VPN_PROVISIONING_WORKER_IMAGE=$(image_for_tag "$(grep '^VPN_PROVISIONING_WORKER_IMAGE=' .env | cut -d= -f2-)")
-  VPN_NOTIFICATION_WORKER_IMAGE=$(image_for_tag "$(grep '^VPN_NOTIFICATION_WORKER_IMAGE=' .env | cut -d= -f2-)")
-  VPN_ADMIN_WEB_IMAGE=$(image_for_tag "$(grep '^VPN_ADMIN_WEB_IMAGE=' .env | cut -d= -f2-)")
-  VPN_MINI_APP_WEB_IMAGE=$(image_for_tag "$(grep '^VPN_MINI_APP_WEB_IMAGE=' .env | cut -d= -f2-)")
-  export VPN_API_IMAGE VPN_TELEGRAM_BOT_IMAGE VPN_BILLING_WORKER_IMAGE VPN_PROVISIONING_WORKER_IMAGE VPN_NOTIFICATION_WORKER_IMAGE VPN_ADMIN_WEB_IMAGE VPN_MINI_APP_WEB_IMAGE
+runtime_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+release_sha=${VPN_BOT_RELEASE:-}
+
+fail() {
+  printf 'release failed: %s\n' "$1" >&2
+  exit 1
+}
+
+if [[ ! $release_sha =~ ^[0-9a-f]{40}$ ]]; then
+  fail 'VPN_BOT_RELEASE must be a full lowercase Git SHA'
 fi
 
-telegram_transport=$(docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U vpn_bot -d vpn_bot -At -c "SELECT COALESCE(value->>'mode', 'polling') FROM app_settings WHERE key = 'telegram_transport_settings'" 2>/dev/null || true)
-telegram_token=${TELEGRAM_BOT_TOKEN:-}
-if [ -z "$telegram_token" ]; then
-  telegram_token=$(grep '^TELEGRAM_BOT_TOKEN=' .env 2>/dev/null | cut -d= -f2- || true)
-fi
-if [ -z "$telegram_token" ]; then
-  telegram_token=$(docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U vpn_bot -d vpn_bot -At -c "SELECT 1 FROM app_secrets WHERE key = 'TELEGRAM_BOT_TOKEN' LIMIT 1" 2>/dev/null || true)
-fi
-if [ -z "$telegram_token" ]; then
-  echo "TELEGRAM_BOT_TOKEN is missing: set it in .env or app_secrets before deploying" >&2
-  exit 78
-fi
-if [ "$telegram_transport" = webhook ]; then
-  webhook_secret=${TELEGRAM_WEBHOOK_SECRET:-}
-  if [ -z "$webhook_secret" ]; then
-    webhook_secret=$(grep '^TELEGRAM_WEBHOOK_SECRET=' .env 2>/dev/null | cut -d= -f2- || true)
-  fi
-  if [ -z "$webhook_secret" ]; then
-    webhook_secret=$(docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U vpn_bot -d vpn_bot -At -c "SELECT 1 FROM app_secrets WHERE key = 'TELEGRAM_WEBHOOK_SECRET' LIMIT 1" 2>/dev/null || true)
-  fi
-  if [ -z "$webhook_secret" ]; then
-    echo "TELEGRAM_WEBHOOK_SECRET is missing for webhook transport" >&2
-    exit 78
-  fi
-fi
+cd "$runtime_dir"
+test -f .env || fail 'missing runtime .env; run setup.sh once before deploying'
+test -f deploy/docker-compose.yml || fail 'missing managed deployment files'
 
-for migration in db/migrations/*.sql; do
-  [ -f "$migration" ] || continue
-  docker compose --env-file .env -f docker-compose.yml exec -T postgres \
-    psql -U vpn_bot -d vpn_bot -v ON_ERROR_STOP=1 < "$migration"
-done
-./apply-runtime-settings.sh
-docker compose --env-file .env -f docker-compose.yml pull
-docker compose --env-file .env -f docker-compose.yml up -d --remove-orphans
+compose=(docker compose --env-file .env -f deploy/docker-compose.yml)
+export VPN_BOT_RELEASE=$release_sha
+"${compose[@]}" config --quiet
+pull_compose=("${compose[@]}" --profile telegram)
+"${pull_compose[@]}" pull
+"${compose[@]}" up -d --no-build postgres redis
 
-deadline=$((SECONDS + 90))
-while :; do
-  all_running=1
-  unhealthy=0
-  for service in $(docker compose --env-file .env -f docker-compose.yml config --services); do
-    container=$(docker compose --env-file .env -f docker-compose.yml ps -q "$service")
-    [ -n "$container" ] || { all_running=0; continue; }
-    status=$(docker inspect -f '{{.State.Status}}' "$container")
-    health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")
-    [ "$status" = running ] || all_running=0
-    [ "$health" != unhealthy ] || unhealthy=1
-  done
-  if [ "$unhealthy" -eq 1 ]; then
-    echo "one or more services are unhealthy" >&2
-    docker compose --env-file .env -f docker-compose.yml ps
-    exit 1
-  fi
-  if [ "$all_running" -eq 1 ] && docker compose --env-file .env -f docker-compose.yml exec -T api curl --fail http://127.0.0.1:8080/readyz >/dev/null; then
+for _ in $(seq 1 30); do
+  if "${compose[@]}" exec -T postgres pg_isready -U vpn_bot -d vpn_bot >/dev/null 2>&1; then
     break
   fi
-  if [ "$SECONDS" -ge "$deadline" ]; then
-    echo "release did not become healthy in time" >&2
-    docker compose --env-file .env -f docker-compose.yml ps
-    exit 1
-  fi
-  sleep 3
+  sleep 2
 done
-docker compose --env-file .env -f docker-compose.yml ps
+"${compose[@]}" exec -T postgres pg_isready -U vpn_bot -d vpn_bot >/dev/null 2>&1 \
+  || fail 'PostgreSQL did not become ready'
+
+shopt -s nullglob
+migrations=(deploy/db/migrations/*.sql)
+for migration in "${migrations[@]}"; do
+  "${compose[@]}" exec -T postgres psql -U vpn_bot -d vpn_bot -v ON_ERROR_STOP=1 < "$migration"
+done
+
+for migration in "${migrations[@]}"; do
+  version=$(basename "${migration%.sql}")
+  applied=$("${compose[@]}" exec -T postgres psql -U vpn_bot -d vpn_bot -tAc \
+    'SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '\''"$version"'\'');')
+  [ "$applied" = 't' ] || fail "migration ledger does not include $version"
+done
+
+telegram_enabled=$("${compose[@]}" exec -T postgres psql -U vpn_bot -d vpn_bot -tAc \
+  "SELECT EXISTS (SELECT 1 FROM app_secrets WHERE key = 'TELEGRAM_BOT_TOKEN');")
+if [ "$telegram_enabled" = 't' ]; then
+  compose+=(--profile telegram)
+else
+  "${compose[@]}" stop telegram-bot >/dev/null 2>&1 || true
+fi
+
+"${compose[@]}" up -d --no-build --remove-orphans
+
+wait_for_http() {
+  local url=$1
+  for _ in $(seq 1 30); do
+    if curl --fail --silent --show-error "$url" >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  fail "health check did not pass: $url"
+}
+
+wait_for_http http://127.0.0.1:18080/healthz
+wait_for_http http://127.0.0.1:18080/readyz
+wait_for_http http://127.0.0.1:18082/healthz
+wait_for_http http://127.0.0.1:18081/healthz
+
+running=$("${compose[@]}" ps --status running --services)
+for service in postgres redis api billing-worker provisioning-worker notification-worker admin-web mini-app-web; do
+  printf '%s\n' "$running" | grep -Fx "$service" >/dev/null \
+    || fail "expected service is not running: $service"
+done
+if [ "$telegram_enabled" = 't' ]; then
+  printf '%s\n' "$running" | grep -Fx telegram-bot >/dev/null \
+    || fail 'Telegram token is configured but telegram-bot is not running'
+fi
+
+mkdir -p data
+if [ -f data/release ]; then
+  cp data/release data/previous-release
+fi
+release_tmp=$(mktemp data/release.XXXXXX)
+printf '%s\n' "$release_sha" > "$release_tmp"
+mv "$release_tmp" data/release
+printf 'release %s verified%s\n' "$release_sha" \
+  "$([ "$telegram_enabled" = 't' ] && printf ' with Telegram polling enabled' || printf ' (Telegram polling disabled: no token configured)')"

@@ -1,4 +1,4 @@
-//! Business types deliberately independent of HTTP, Telegram, and SQL.
+//! Domain values shared by every runtime process.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,16 +13,17 @@ pub struct Money {
 }
 
 impl Money {
-    /// Creates a non-negative amount represented in a currency's minor unit.
+    /// Creates a non-negative minor-unit amount.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::NegativeMoney`] when `amount_minor` is negative.
+    /// Returns [`DomainError::NegativeMoney`] for negative amounts.
     pub const fn new(amount_minor: i64) -> Result<Self, DomainError> {
         if amount_minor < 0 {
-            return Err(DomainError::NegativeMoney);
+            Err(DomainError::NegativeMoney)
+        } else {
+            Ok(Self { amount_minor })
         }
-        Ok(Self { amount_minor })
     }
 }
 
@@ -53,6 +54,53 @@ pub enum SubscriptionStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubscriptionFormat {
+    Clash,
+    SingBox,
+    Xray,
+    Base64,
+}
+
+impl SubscriptionFormat {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "clash" => Some(Self::Clash),
+            "sing-box" | "singbox" => Some(Self::SingBox),
+            "xray" => Some(Self::Xray),
+            "base64" => Some(Self::Base64),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Clash => "clash",
+            Self::SingBox => "sing-box",
+            Self::Xray => "xray",
+            Self::Base64 => "base64",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyNode {
+    pub name: String,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionProfile {
+    pub title: String,
+    pub expires_at: Option<i64>,
+    pub traffic_used_bytes: i64,
+    pub traffic_limit_bytes: Option<i64>,
+    pub support_url: Option<String>,
+    pub nodes: Vec<ProxyNode>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdempotencyKey(pub Uuid);
 
@@ -64,7 +112,7 @@ pub enum DomainError {
 
 #[cfg(test)]
 mod tests {
-    use super::{InvoiceStatus, Money};
+    use super::{InvoiceStatus, Money, SubscriptionFormat};
 
     #[test]
     fn invoice_cannot_leave_a_terminal_state() {
@@ -76,5 +124,14 @@ mod tests {
     fn money_rejects_negative_values() {
         assert!(Money::new(-1).is_err());
         assert_eq!(Money::new(0).unwrap().amount_minor, 0);
+    }
+
+    #[test]
+    fn format_parser_is_conservative() {
+        assert_eq!(
+            SubscriptionFormat::parse("sing-box"),
+            Some(SubscriptionFormat::SingBox)
+        );
+        assert!(SubscriptionFormat::parse("unknown").is_none());
     }
 }

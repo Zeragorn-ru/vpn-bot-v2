@@ -7,23 +7,16 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-aes-gcm.workspace = true
-base64.workspace = true
 chrono.workspace = true
 dotenvy.workspace = true
-rand.workspace = true
-serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+url.workspace = true
 uuid.workspace = true
 vpn-integrations = { path = "../../crates/integrations" }
-vpn-domain = { path = "../../crates/domain" }
 vpn-observability = { path = "../../crates/observability" }
 vpn-storage = { path = "../../crates/storage" }
-
-[dev-dependencies]
-axum.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,20 @@
+name: vector-preview
+
+services:
+  preview-web:
+    build:
+      context: ../web/preview
+    image: vector-preview:local
+    ports:
+      - "127.0.0.1:${PREVIEW_HOST_PORT:-18084}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz | grep -q '^ok'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"

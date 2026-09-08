@@ -5,10 +5,18 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full 40-character SHA of an already published release
+        required: true
+        type: string
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: vpn-bot-v2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   rust:
@@ -18,7 +26,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
+      - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
@@ -39,10 +47,55 @@ jobs:
       - run: npm run build
         working-directory: web/${{ matrix.app }}
 
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: vpn_bot
+          POSTGRES_USER: vpn_bot
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vpn_bot -d vpn_bot"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply baseline and migrations
+        env:
+          PGPASSWORD: ci-password
+        run: |
+          psql=(psql -h 127.0.0.1 -U vpn_bot -d vpn_bot -v ON_ERROR_STOP=1)
+          "${psql[@]}" < deploy/db/init/001_baseline.sql
+          for migration in deploy/db/migrations/*.sql; do
+            "${psql[@]}" < "$migration"
+          done
+
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Rust dependencies
+        uses: actions-rust-lang/audit@v1
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   images:
-    needs: [rust, web]
+    needs: [rust, web, security, migrations]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -62,16 +115,22 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64
           build-args: BINARY=${{ matrix.binary }}
           push: true
-          tags: |
-            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.binary }}:${{ github.sha }}
-            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.binary }}:latest
+          sbom: true
+          provenance: mode=max
+          tags: ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.binary }}:${{ github.sha }}
 
   web-images:
-    needs: [rust, web]
+    needs: [rust, web, security, migrations]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -90,46 +149,74 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:${{ github.sha }}
-            ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:latest
+          sbom: true
+          provenance: mode=max
+          tags: ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:${{ github.sha }}
 
   deploy:
-    needs: [images, web-images]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [rust, web, migrations, security, images, web-images]
+    if: >-
+      always() && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          needs.images.result == 'success' && needs.web-images.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && needs.rust.result == 'success' &&
+          needs.web.result == 'success' && needs.migrations.result == 'success' &&
+          needs.security.result == 'success')
+      )
     runs-on: ubuntu-latest
-    environment: production
+    environment: test
     concurrency:
-      group: vpn-bot-v2-production
+      group: vpn-bot-v2-test-deployment
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
-      - name: Upload runtime files
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: root
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: >-
-            deploy/docker-compose.yml,deploy/update.sh,deploy/rollback.sh,
-            deploy/backup-postgres.sh,deploy/restore-rehearsal.sh,
-            deploy/apply-runtime-settings.sh,deploy/host-nginx.example.conf,
-            deploy/.env.example,deploy/db/init/001_baseline.sql,
-            deploy/db/migrations/manifest.txt,deploy/db/migrations/*.sql
-          target: ${{ secrets.DEPLOY_PATH }}/
-          strip_components: 1
-      - name: Apply release on server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: root
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            runtime_dir='${{ secrets.DEPLOY_PATH }}'
-            test -f "$runtime_dir/.env"
-            systemctl disable --now vpn-bot-v2-auto-update.timer >/dev/null 2>&1 || true
-            cd "$runtime_dir"
-            chmod +x update.sh rollback.sh backup-postgres.sh restore-rehearsal.sh apply-runtime-settings.sh
-            VPN_BOT_IMAGE_TAG='${{ github.sha }}' ./update.sh
+      - name: Select immutable release
+        env:
+          REQUESTED_RELEASE: ${{ inputs.release_sha }}
+        run: |
+          release="${REQUESTED_RELEASE:-$GITHUB_SHA}"
+          [[ "$release" =~ ^[0-9a-f]{40}$ ]] || {
+            printf '%s\n' 'release SHA must be a full lowercase 40-character hash' >&2
+            exit 64
+          }
+          printf 'RELEASE_SHA=%s\n' "$release" >> "$GITHUB_ENV"
+      - name: Configure pinned SSH access
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_FINGERPRINT: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
+        run: |
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || exit 64
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z0-9_-]+$ ]] || exit 64
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || exit 64
+          [[ "$DEPLOY_SSH_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]+=?$ ]] || exit 64
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          scan=$(ssh-keyscan -T 10 -t ed25519 "$DEPLOY_HOST")
+          actual=$(printf '%s\n' "$scan" | ssh-keygen -lf - | awk '{print $2}')
+          test "$actual" = "$DEPLOY_SSH_FINGERPRINT"
+          printf '%s\n' "$scan" > ~/.ssh/known_hosts
+      - name: Upload managed deployment files
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "install -d -m 0750 '$DEPLOY_PATH/deploy'"
+          tar --create --gzip --file - deploy | \
+            ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+              "tar --extract --gzip --file - -C '$DEPLOY_PATH'"
+      - name: Apply immutable release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_PATH' && chmod 750 deploy/update.sh deploy/rollback.sh deploy/backup-postgres.sh deploy/restore-rehearsal.sh deploy/apply-runtime-settings.sh && VPN_BOT_RELEASE='$RELEASE_SHA' deploy/update.sh"

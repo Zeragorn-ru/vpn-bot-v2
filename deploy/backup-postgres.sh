@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-set -eu
-
-backup_dir=${POSTGRES_BACKUP_DIR:-./backups}
-timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-backup_file="$backup_dir/vpn_bot_$timestamp.dump"
-env_file=${ENV_FILE:-.env}
-
+set -euo pipefail
+install_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+backup_dir="$install_dir/data/backups"
 mkdir -p "$backup_dir"
-docker compose --env-file "$env_file" -f docker-compose.yml exec -T postgres \
-  pg_dump -U vpn_bot -Fc vpn_bot > "$backup_file"
-
-test -s "$backup_file"
-printf '%s\n' "$backup_file"
+output="$backup_dir/postgres-$(date -u +%Y%m%dT%H%M%SZ).dump"
+cd "$install_dir"
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T postgres \
+  pg_dump --format=custom --no-owner --no-privileges --username=vpn_bot --dbname=vpn_bot > "$output"
+sha256sum "$output" > "$output.sha256"
+printf '%s\n' "$output"

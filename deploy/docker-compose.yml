@@ -1,7 +1,6 @@
-name: vpn-bot-v2
+name: vector
 
-x-service: &service
-  env_file: ${ENV_FILE:-.env}
+x-app: &app
   restart: unless-stopped
   logging:
     driver: local
@@ -9,40 +8,49 @@ x-service: &service
       max-size: 10m
       max-file: "5"
 
+x-runtime-environment: &runtime-environment
+  DATABASE_URL: postgres://vpn_bot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/vpn_bot
+  APPLICATION_ENCRYPTION_KEY: ${APPLICATION_ENCRYPTION_KEY:?set APPLICATION_ENCRYPTION_KEY in .env}
+
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
       POSTGRES_DB: vpn_bot
       POSTGRES_USER: vpn_bot
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ../data/postgres:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vpn_bot -d vpn_bot"]
       interval: 5s
       timeout: 3s
       retries: 20
-    restart: unless-stopped
+    <<: *app
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ./data/redis:/data
+      - ../data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
-    restart: unless-stopped
+    <<: *app
 
   api:
-    <<: *service
-    image: ${VPN_API_IMAGE:?set VPN_API_IMAGE in .env}
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-vpn-api:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
+    environment:
+      <<: *runtime-environment
+      REDIS_URL: redis://redis:6379
+      BOOTSTRAP_DIR: /var/lib/vpn/bootstrap
     ports:
-      - "127.0.0.1:${API_HOST_PORT:-18080}:8080"
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ../data/bootstrap:/var/lib/vpn/bootstrap
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,51 +61,55 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+    <<: *app
 
   telegram-bot:
-    <<: *service
-    image: ${VPN_TELEGRAM_BOT_IMAGE:?set VPN_TELEGRAM_BOT_IMAGE in .env}
-    ports:
-      - "127.0.0.1:${TELEGRAM_WEBHOOK_HOST_PORT:-18083}:8083"
+    profiles: ["telegram"]
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-vpn-telegram-bot:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
+    environment: *runtime-environment
     depends_on:
       postgres:
         condition: service_healthy
+      api:
+        condition: service_healthy
+    <<: *app
 
   billing-worker:
-    <<: *service
-    image: ${VPN_BILLING_WORKER_IMAGE:?set VPN_BILLING_WORKER_IMAGE in .env}
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-vpn-billing-worker:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
     depends_on:
       postgres:
         condition: service_healthy
+    <<: *app
 
   provisioning-worker:
-    <<: *service
-    image: ${VPN_PROVISIONING_WORKER_IMAGE:?set VPN_PROVISIONING_WORKER_IMAGE in .env}
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-vpn-provisioning-worker:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
+    environment: *runtime-environment
     depends_on:
       postgres:
         condition: service_healthy
+    <<: *app
 
   notification-worker:
-    <<: *service
-    image: ${VPN_NOTIFICATION_WORKER_IMAGE:?set VPN_NOTIFICATION_WORKER_IMAGE in .env}
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-vpn-notification-worker:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
     depends_on:
       postgres:
         condition: service_healthy
+    <<: *app
 
   admin-web:
-    <<: *service
-    image: ${VPN_ADMIN_WEB_IMAGE:?set VPN_ADMIN_WEB_IMAGE in .env}
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-admin-web:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
     ports:
-      - "127.0.0.1:${ADMIN_WEB_HOST_PORT:-18082}:80"
+      - "127.0.0.1:18082:80"
     depends_on:
       api:
         condition: service_healthy
+    <<: *app
 
   mini-app-web:
-    <<: *service
-    image: ${VPN_MINI_APP_WEB_IMAGE:?set VPN_MINI_APP_WEB_IMAGE in .env}
+    image: ghcr.io/zeragorn-ru/vpn-bot-v2-mini-app-web:${VPN_BOT_RELEASE:?set VPN_BOT_RELEASE to a release SHA}
     ports:
-      - "127.0.0.1:${MINI_APP_WEB_HOST_PORT:-18081}:80"
+      - "127.0.0.1:18081:80"
     depends_on:
       api:
         condition: service_healthy
+    <<: *app

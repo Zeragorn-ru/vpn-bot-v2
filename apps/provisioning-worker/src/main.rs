@@ -2,7 +2,7 @@ use std::{env, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, Row, postgres::PgRow};
 use tracing::{error, info};
 use url::Url;
 use uuid::Uuid;
@@ -16,11 +16,21 @@ struct WorkerState {
     encryption_key: Arc<[u8; 32]>,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct OutboxItem {
     id: Uuid,
     aggregate_id: Uuid,
     event_type: String,
+}
+
+impl<'row> FromRow<'row, PgRow> for OutboxItem {
+    fn from_row(row: &'row PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            aggregate_id: row.try_get("aggregate_id")?,
+            event_type: row.try_get("event_type")?,
+        })
+    }
 }
 
 #[tokio::main]

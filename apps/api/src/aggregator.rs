@@ -11,7 +11,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::FromRow;
+use sqlx::{FromRow, Row, postgres::PgRow};
 use url::Url;
 use uuid::Uuid;
 use vpn_domain::{ProxyNode, SubscriptionFormat, SubscriptionProfile};
@@ -42,7 +42,7 @@ pub struct FormatQuery {
     pub format: Option<String>,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct EntitlementRow {
     status: String,
     expires_at: Option<DateTime<Utc>>,
@@ -50,6 +50,19 @@ struct EntitlementRow {
     traffic_limit_bytes: Option<i64>,
     snapshot: Option<Vec<u8>>,
     snapshot_fresh_until: Option<DateTime<Utc>>,
+}
+
+impl<'row> FromRow<'row, PgRow> for EntitlementRow {
+    fn from_row(row: &'row PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            status: row.try_get("status")?,
+            expires_at: row.try_get("expires_at")?,
+            traffic_used_bytes: row.try_get("traffic_used_bytes")?,
+            traffic_limit_bytes: row.try_get("traffic_limit_bytes")?,
+            snapshot: row.try_get("snapshot")?,
+            snapshot_fresh_until: row.try_get("snapshot_fresh_until")?,
+        })
+    }
 }
 
 #[derive(Debug)]

@@ -15,7 +15,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool, Postgres, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Row, Transaction, postgres::PgRow};
 use tower_http::{catch_panic::CatchPanicLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -114,10 +114,19 @@ struct Principal {
     permissions: Vec<String>,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug)]
 struct SessionRow {
     account_id: Uuid,
     login: String,
+}
+
+impl<'row> FromRow<'row, PgRow> for SessionRow {
+    fn from_row(row: &'row PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            account_id: row.try_get("account_id")?,
+            login: row.try_get("login")?,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]

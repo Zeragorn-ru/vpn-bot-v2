@@ -1,0 +1,5 @@
+[advisories]
+# `sqlx` retains optional database drivers in Cargo.lock. This application enables only
+# SQLx PostgreSQL support; `cargo tree -i sqlx-mysql` is intentionally empty. RUSTSEC-2023-0071
+# has no fixed upgrade and affects the unused optional MySQL driver only.
+ignore = ["RUSTSEC-2023-0071"]

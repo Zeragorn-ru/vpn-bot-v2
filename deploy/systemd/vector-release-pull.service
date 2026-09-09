@@ -1,0 +1,18 @@
+[Unit]
+Description=VECTOR pull and verify published test release
+Wants=network-online.target
+After=network-online.target docker.service
+ConditionPathExists=/opt/vector/.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/vector-release-pull.env
+ExecStart=/opt/vector/deploy/pull-release.sh
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+TimeoutStartSec=15min

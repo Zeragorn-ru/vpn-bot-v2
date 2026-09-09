@@ -5,11 +5,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      release_sha:
-        description: Full 40-character SHA of an already published release
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -87,8 +82,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  delivery-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployment scripts
+        run: |
+          bash -n deploy/*.sh tests/pull-release.sh setup.sh
+          bash tests/pull-release.sh
+      - name: Render immutable release Compose configuration
+        run: |
+          runtime_env=$(mktemp)
+          trap 'rm -f "$runtime_env"' EXIT
+          printf '%s\n' 'POSTGRES_PASSWORD=ci-password' \
+            'APPLICATION_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' > "$runtime_env"
+          VPN_BOT_RELEASE=0123456789abcdef0123456789abcdef01234567 \
+            docker compose --env-file "$runtime_env" -f deploy/docker-compose.yml config --quiet
+
   images:
-    needs: [rust, web, security, migrations]
+    needs: [rust, web, security, migrations, delivery-scripts]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -124,7 +136,7 @@ jobs:
           tags: ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.binary }}:${{ github.sha }}
 
   web-images:
-    needs: [rust, web, security, migrations]
+    needs: [rust, web, security, migrations, delivery-scripts]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -157,107 +169,31 @@ jobs:
           provenance: mode=max
           tags: ghcr.io/zeragorn-ru/vpn-bot-v2-${{ matrix.name }}:${{ github.sha }}
 
-  deploy:
-    needs: [rust, web, migrations, security, images, web-images]
+  publish-test-release:
+    needs: [rust, web, migrations, security, delivery-scripts, images, web-images]
     if: >-
-      always() && (
-        (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-          needs.images.result == 'success' && needs.web-images.result == 'success') ||
-        (github.event_name == 'workflow_dispatch' && needs.rust.result == 'success' &&
-          needs.web.result == 'success' && needs.migrations.result == 'success' &&
-          needs.security.result == 'success')
-      )
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.images.result == 'success' && needs.web-images.result == 'success'
     runs-on: ubuntu-latest
-    environment: test
-    concurrency:
-      group: vpn-bot-v2-test-deployment
-      cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Select immutable release
+      - name: Publish immutable pull-release descriptor
         env:
-          REQUESTED_RELEASE: ${{ inputs.release_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          release="${REQUESTED_RELEASE:-$GITHUB_SHA}"
-          [[ "$release" =~ ^[0-9a-f]{40}$ ]] || {
-            printf '%s\n' 'release SHA must be a full lowercase 40-character hash' >&2
-            exit 64
-          }
-          printf 'RELEASE_SHA=%s\n' "$release" >> "$GITHUB_ENV"
-      - name: Configure pinned SSH access
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_SSH_FINGERPRINT: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
-          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
-        run: |
-          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || exit 64
-          [[ "$DEPLOY_USER" =~ ^[A-Za-z0-9_-]+$ ]] || exit 64
-          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || exit 64
-          [[ "$DEPLOY_SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( DEPLOY_SSH_PORT >= 1 && DEPLOY_SSH_PORT <= 65535 )) || exit 64
-          [[ "$DEPLOY_SSH_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]+=?$ ]] || exit 64
-          [[ "$DEPLOY_SSH_HOST_KEY" =~ ^\[[A-Za-z0-9.:-]+\]:[0-9]{1,5}\ ssh-ed25519\ [A-Za-z0-9+/]+={0,2}$ ]] || exit 64
-          host_key_fingerprint=$(printf '%s\n' "$DEPLOY_SSH_HOST_KEY" | ssh-keygen -lf - | awk '{print $2}')
-          test "$host_key_fingerprint" = "$DEPLOY_SSH_FINGERPRINT"
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > ~/.ssh/known_hosts
-      - name: Upload managed deployment files
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
-        run: |
-          set -o pipefail
-          ssh_options=(-i ~/.ssh/id_ed25519 -p "$DEPLOY_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes
-            -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
-            -o ServerAliveCountMax=3 -o ControlMaster=auto
-            -o "ControlPath=$RUNNER_TEMP/vpn-bot-ssh-%C" -o ControlPersist=120)
-          ssh_retry() {
-            local attempt
-            for attempt in 1 2 3; do
-              if ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$@"; then
-                return 0
-              fi
-              [ "$attempt" -eq 3 ] || sleep "$((attempt * 5))"
-            done
-            return 1
-          }
-          upload_retry() {
-            local attempt
-            for attempt in 1 2 3; do
-              if tar --create --gzip --file - deploy | \
-                ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
-                  "tar --extract --gzip --file - -C '$DEPLOY_PATH'"; then
-                return 0
-              fi
-              [ "$attempt" -eq 3 ] || sleep "$((attempt * 5))"
-            done
-            return 1
-          }
-          ssh_retry "install -d -m 0750 '$DEPLOY_PATH/deploy'"
-          upload_retry
-      - name: Apply immutable release
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
-        run: |
-          ssh_options=(-i ~/.ssh/id_ed25519 -p "$DEPLOY_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes
-            -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
-            -o ServerAliveCountMax=3 -o ControlMaster=auto
-            -o "ControlPath=$RUNNER_TEMP/vpn-bot-ssh-%C" -o ControlPersist=120)
-          for attempt in 1 2 3; do
-            if ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
-              "cd '$DEPLOY_PATH' && chmod 750 deploy/update.sh deploy/rollback.sh deploy/backup-postgres.sh deploy/restore-rehearsal.sh deploy/apply-runtime-settings.sh && VPN_BOT_RELEASE='$RELEASE_SHA' deploy/update.sh"; then
-              exit 0
-            fi
-            [ "$attempt" -eq 3 ] || sleep "$((attempt * 5))"
-          done
-          exit 1
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 64
+          tag="test-$RELEASE_SHA"
+          if target=$(gh release view "$tag" --repo "$REPOSITORY" --json targetCommitish --jq .targetCommitish 2>/dev/null); then
+            test "$target" = "$RELEASE_SHA" || {
+              printf '%s\n' "existing release $tag targets a different commit" >&2
+              exit 65
+            }
+            exit 0
+          fi
+          gh release create "$tag" --repo "$REPOSITORY" --target "$RELEASE_SHA" \
+            --prerelease --title "Test release $RELEASE_SHA" \
+            --notes "Validated SHA release for server-initiated pull deployment."

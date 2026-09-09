@@ -13,4 +13,6 @@ if [[ ! $release_sha =~ ^[0-9a-f]{40}$ ]]; then
   exit 64
 fi
 
+touch data/pull-release-hold
+printf '%s\n' 'Automatic pull updates are paused until data/pull-release-hold is removed.'
 VPN_BOT_RELEASE=$release_sha exec ./deploy/update.sh

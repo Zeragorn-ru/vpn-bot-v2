@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll for published VECTOR test releases
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=45s
+Persistent=true
+Unit=vector-release-pull.service
+
+[Install]
+WantedBy=timers.target

@@ -41,8 +41,9 @@ done
 
 for migration in "${migrations[@]}"; do
   version=$(basename "${migration%.sql}")
+  [[ $version =~ ^[A-Za-z0-9_-]+$ ]] || fail "invalid migration filename: $migration"
   applied=$("${compose[@]}" exec -T postgres psql -U vpn_bot -d vpn_bot -tAc \
-    'SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '\''"$version"'\'');')
+    "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$version');")
   [ "$applied" = 't' ] || fail "migration ledger does not include $version"
 done
 

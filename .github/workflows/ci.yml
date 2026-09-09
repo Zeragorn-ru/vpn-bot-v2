@@ -192,19 +192,20 @@ jobs:
           DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_FINGERPRINT: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
         run: |
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || exit 64
           [[ "$DEPLOY_USER" =~ ^[A-Za-z0-9_-]+$ ]] || exit 64
           [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || exit 64
           [[ "$DEPLOY_SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( DEPLOY_SSH_PORT >= 1 && DEPLOY_SSH_PORT <= 65535 )) || exit 64
           [[ "$DEPLOY_SSH_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]+=?$ ]] || exit 64
+          [[ "$DEPLOY_SSH_HOST_KEY" =~ ^\[[A-Za-z0-9.:-]+\]:[0-9]{1,5}\ ssh-ed25519\ [A-Za-z0-9+/]+={0,2}$ ]] || exit 64
+          host_key_fingerprint=$(printf '%s\n' "$DEPLOY_SSH_HOST_KEY" | ssh-keygen -lf - | awk '{print $2}')
+          test "$host_key_fingerprint" = "$DEPLOY_SSH_FINGERPRINT"
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          scan=$(ssh-keyscan -T 10 -p "$DEPLOY_SSH_PORT" -t ed25519 "$DEPLOY_HOST")
-          actual=$(printf '%s\n' "$scan" | ssh-keygen -lf - | awk '{print $2}')
-          test "$actual" = "$DEPLOY_SSH_FINGERPRINT"
-          printf '%s\n' "$scan" > ~/.ssh/known_hosts
+          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > ~/.ssh/known_hosts
       - name: Upload managed deployment files
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -215,7 +216,8 @@ jobs:
           set -o pipefail
           ssh_options=(-i ~/.ssh/id_ed25519 -p "$DEPLOY_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes
             -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
-            -o ServerAliveCountMax=3)
+            -o ServerAliveCountMax=3 -o ControlMaster=auto
+            -o "ControlPath=$RUNNER_TEMP/vpn-bot-ssh-%C" -o ControlPersist=120)
           ssh_retry() {
             local attempt
             for attempt in 1 2 3; do
@@ -249,7 +251,8 @@ jobs:
         run: |
           ssh_options=(-i ~/.ssh/id_ed25519 -p "$DEPLOY_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes
             -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
-            -o ServerAliveCountMax=3)
+            -o ServerAliveCountMax=3 -o ControlMaster=auto
+            -o "ControlPath=$RUNNER_TEMP/vpn-bot-ssh-%C" -o ControlPersist=120)
           for attempt in 1 2 3; do
             if ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
               "cd '$DEPLOY_PATH' && chmod 750 deploy/update.sh deploy/rollback.sh deploy/backup-postgres.sh deploy/restore-rehearsal.sh deploy/apply-runtime-settings.sh && VPN_BOT_RELEASE='$RELEASE_SHA' deploy/update.sh"; then

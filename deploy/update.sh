@@ -21,7 +21,7 @@ compose=(docker compose --env-file .env -f deploy/docker-compose.yml)
 export VPN_BOT_RELEASE=$release_sha
 "${compose[@]}" config --quiet
 pull_compose=("${compose[@]}" --profile telegram)
-"${pull_compose[@]}" pull
+"${pull_compose[@]}" pull --policy missing
 "${compose[@]}" up -d --no-build postgres redis
 
 for _ in $(seq 1 30); do

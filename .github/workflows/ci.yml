@@ -189,17 +189,19 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_FINGERPRINT: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
         run: |
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || exit 64
           [[ "$DEPLOY_USER" =~ ^[A-Za-z0-9_-]+$ ]] || exit 64
           [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || exit 64
+          [[ "$DEPLOY_SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( DEPLOY_SSH_PORT >= 1 && DEPLOY_SSH_PORT <= 65535 )) || exit 64
           [[ "$DEPLOY_SSH_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]+=?$ ]] || exit 64
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          scan=$(ssh-keyscan -T 10 -t ed25519 "$DEPLOY_HOST")
+          scan=$(ssh-keyscan -T 10 -p "$DEPLOY_SSH_PORT" -t ed25519 "$DEPLOY_HOST")
           actual=$(printf '%s\n' "$scan" | ssh-keygen -lf - | awk '{print $2}')
           test "$actual" = "$DEPLOY_SSH_FINGERPRINT"
           printf '%s\n' "$scan" > ~/.ssh/known_hosts
@@ -208,9 +210,10 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
         run: |
           set -o pipefail
-          ssh_options=(-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+          ssh_options=(-i ~/.ssh/id_ed25519 -p "$DEPLOY_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes
             -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
             -o ServerAliveCountMax=3)
           ssh_retry() {
@@ -242,8 +245,9 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
         run: |
-          ssh_options=(-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+          ssh_options=(-i ~/.ssh/id_ed25519 -p "$DEPLOY_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes
             -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=10
             -o ServerAliveCountMax=3)
           for attempt in 1 2 3; do
